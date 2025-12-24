@@ -2,13 +2,27 @@
 
 ## 1. Project Overview
 
-A Rust procedural macro crate that automatically maps Rust struct fields to Modbus registers, supporting:
-- Multiple Rust primitive types (u8, u16, u32, u64, i8, i16, i32, i64, f32, f64, bool)
-- Configurable endianness (Big-endian, Little-endian)
-- Industry-standard Modbus configurations
-- Automatic register allocation
-- Type-safe read/write operations
-- Support for all Modbus register types (Holding, Input, Coils, Discrete Inputs)
+A Rust procedural macro crate that automatically maps Rust struct fields to Modbus registers with **comprehensive type support** for both **client and server** use cases:
+
+### Supported Types (v1.0):
+- **Primitives**: u8-u64, i8-i64, f32, f64, bool
+- **Strings**: Fixed-length String with configurable encoding/padding
+- **Arrays**: Fixed-size arrays up to 3D
+- **Option<T>**: Nullable types with sentinel values or validity flags
+- **Enums**: #[repr] enums with discriminant validation
+- **Bit fields**: Pack multiple bools/integers into single registers
+- **Nested structs**: Composition via #[modbus(flatten)]
+- **Tuples**: Up to 8-element tuples
+
+### Key Features:
+- Configurable endianness (big/little) per field
+- Compile-time validation of all mappings
+- Type-safe serialization/deserialization
+- Both client (master) and server (slave) modes
+- Server features: readonly/writeonly fields, validation, change callbacks
+- Support for all Modbus register types (Holding, Input, Coils, Discrete)
+- Field-level and struct-level read/write operations
+- Thread-safe server patterns
 
 ## 2. Crate Structure
 
@@ -45,25 +59,36 @@ tokio-modbus-mapper/
 
 ## 4. Type Mappings
 
-| Rust Type | Registers | Bits | Default Endian |
-|-----------|-----------|------|----------------|
-| bool      | 1 coil    | 1    | N/A            |
-| u8        | 1         | 16*  | Big            |
-| i8        | 1         | 16*  | Big            |
-| u16       | 1         | 16   | Big            |
-| i16       | 1         | 16   | Big            |
-| u32       | 2         | 32   | Big            |
-| i32       | 2         | 32   | Big            |
-| u64       | 4         | 64   | Big            |
-| i64       | 4         | 64   | Big            |
-| f32       | 2         | 32   | Big            |
-| f64       | 4         | 64   | Big            |
+### Primitive Types
+
+| Rust Type | Registers | Bits | Default Endian | Notes |
+|-----------|-----------|------|----------------|-------|
+| bool      | 1 coil or bit | 1 | N/A | Coil or bit field in register |
+| u8        | 1         | 16*  | Big | Stored in lower byte |
+| i8        | 1         | 16*  | Big | Stored in lower byte |
+| u16       | 1         | 16   | Big | |
+| i16       | 1         | 16   | Big | |
+| u32       | 2         | 32   | Big | Configurable word order |
+| i32       | 2         | 32   | Big | Configurable word order |
+| u64       | 4         | 64   | Big | Configurable word order |
+| i64       | 4         | 64   | Big | Configurable word order |
+| f32       | 2         | 32   | Big | IEEE 754, configurable word order |
+| f64       | 4         | 64   | Big | IEEE 754, configurable word order |
 
 *Note: u8/i8 stored in lower byte of 16-bit register
 
-### Array Support:
-- Fixed-size arrays: `[T; N]` where T is any supported type
-- Register allocation: `N × registers_per_T`
+### Complex Types
+
+| Rust Type | Registers | Configuration | Notes |
+|-----------|-----------|---------------|-------|
+| String | N (specified) | `length = N` | Fixed-length, 2 bytes per register |
+| [T; N] | N × size(T) | Compile-time length | Sequential layout |
+| [[T; Y]; X] | X × Y × size(T) | Up to 3D | Row-major layout |
+| Option<T> | size(T) or size(T)+1 | `none_value` or `none_flag` | Sentinel or validity flag |
+| Enum | 1-4 | `#[repr(u8/u16/u32/u64)]` | Discriminant validation |
+| (T1, T2, ...) | Σ size(Ti) | Up to 8 elements | Sequential layout |
+| Nested Struct | sum of fields | `#[modbus(flatten)]` | Inline fields |
+| Bit field | Shared register | `bit = N` or `bits = N..M` | Pack multiple into one register |
 
 ## 5. Macro API Design
 
@@ -303,47 +328,92 @@ darling = "0.20"  # For parsing attributes easily
 
 ## 11. Implementation Phases
 
-### Phase 1: Core Infrastructure ✓
-- [ ] Set up workspace with two crates
+### Phase 1: Core Infrastructure
+- [ ] Set up workspace with two crates (modbus-mapper + modbus-mapper-derive)
 - [ ] Define basic traits and types
-- [ ] Implement endianness conversion utilities
-- [ ] Create error types
+- [ ] Implement endianness conversion utilities (big/little word order)
+- [ ] Create comprehensive error types
 
-### Phase 2: Basic Proc Macro ✓
-- [ ] Parse `#[derive(ModbusMapper)]`
-- [ ] Parse struct-level attributes
-- [ ] Parse field-level attributes
-- [ ] Validate attribute combinations
+### Phase 2: Primitive Types - Proc Macro
+- [ ] Parse `#[derive(ModbusMapper)]` and `#[derive(ModbusEnum)]`
+- [ ] Parse struct-level attributes (base_address, register_type, default_endian)
+- [ ] Parse field-level attributes (address, endian, skip)
+- [ ] Validate attribute combinations at compile time
+- [ ] Generate code for primitive types (u8-u64, i8-i64, f32, f64, bool)
 
-### Phase 3: Code Generation - Register Serialization ✓
+### Phase 3: Basic Serialization
 - [ ] Generate `to_registers()` for primitive types
 - [ ] Generate `from_registers()` for primitive types
-- [ ] Handle endianness for multi-register types
-- [ ] Support for arrays
+- [ ] Handle endianness for multi-register types (u32, u64, f32, f64)
+- [ ] Support for fixed-size arrays `[T; N]`
+- [ ] Generate metadata methods (register_count, base_address, field_address)
 
-### Phase 4: Tokio-Modbus Integration ✓
-- [ ] Generate async read methods
-- [ ] Generate async write methods
-- [ ] Handle different register types (holding/input/coils)
-- [ ] Implement field-specific I/O
+### Phase 4: Tokio-Modbus Client Integration
+- [ ] Generate async `read_from_modbus()` method
+- [ ] Generate async `write_to_modbus()` method
+- [ ] Generate async `read_field_from_modbus()` method
+- [ ] Generate async `write_field_to_modbus()` method
+- [ ] Handle different register types (holding/input/coils/discrete)
 
-### Phase 5: Advanced Features ✓
-- [ ] Bit field support
-- [ ] String support
-- [ ] Scaled integers
-- [ ] Custom type support via traits
+### Phase 5: Advanced Types - Strings & Option
+- [ ] Fixed-length String support with `length` attribute
+- [ ] String encoding (ASCII, UTF-8) and padding (null, space, none)
+- [ ] Option<T> with sentinel value strategy (`none_value`)
+- [ ] Option<T> with validity flag strategy (`none_flag`)
+- [ ] NaN handling for Option<f32>/Option<f64>
 
-### Phase 6: Testing & Documentation ✓
-- [ ] Unit tests for type conversions
+### Phase 6: Advanced Types - Enums & Bit Fields
+- [ ] Enum support with `#[repr(u8/u16/u32/u64)]`
+- [ ] Discriminant validation on read
+- [ ] Invalid enum error handling
+- [ ] Bit field support (`bit = N`)
+- [ ] Bit range support (`bits = N..M`)
+- [ ] Overlap detection for bit fields
+
+### Phase 7: Advanced Types - Nested & Tuples
+- [ ] Nested struct support with `flatten` attribute
+- [ ] Multi-level nesting support
+- [ ] Tuple support up to 8 elements
+- [ ] Multi-dimensional arrays (2D, 3D)
+- [ ] Row-major layout for multi-dim arrays
+
+### Phase 8: Server Mode Support
+- [ ] `update_from_registers()` method for write handling
+- [ ] `update_field_from_registers()` for field writes
+- [ ] Read-only field support (`readonly` attribute)
+- [ ] Write-only field support (`writeonly` attribute)
+- [ ] Validation support (`validate` range, `validate_with` function)
+- [ ] Change callback support (`on_change` attribute)
+
+### Phase 9: Testing & Validation
+- [ ] Unit tests for all type conversions
+- [ ] Unit tests for endianness handling
+- [ ] Enum discriminant validation tests
+- [ ] Bit field packing/unpacking tests
+- [ ] Integration tests with tokio-modbus
 - [ ] Integration tests with Modbus simulator
-- [ ] Documentation with examples
-- [ ] Performance benchmarks
+- [ ] Server mode integration tests
+- [ ] Property-based testing with proptest
 
-### Phase 7: Polish ✓
-- [ ] Comprehensive error messages from macro
-- [ ] Compile-time validation
-- [ ] Examples for common use cases
-- [ ] CI/CD setup
+### Phase 10: Documentation & Examples
+- [ ] API documentation for all public items
+- [ ] Type specification document (TYPE_SPEC.md) ✓
+- [ ] Implementation plan (PLAN.md) ✓
+- [ ] Example: Simple sensor client
+- [ ] Example: Complex device with all types
+- [ ] Example: Modbus server implementation
+- [ ] Example: Thread-safe server with Arc<RwLock>
+- [ ] Tutorial documentation
+
+### Phase 11: Performance & Polish
+- [ ] Benchmark register conversion performance
+- [ ] Benchmark serialization/deserialization
+- [ ] Optimize generated code size
+- [ ] Comprehensive compile-time error messages
+- [ ] Helpful error messages from macro
+- [ ] Clippy lints and fixes
+- [ ] CI/CD pipeline setup
+- [ ] Crates.io release preparation
 
 ## 12. Testing Strategy
 
