@@ -2,174 +2,99 @@
 
 > Zero-cost procedural macros for type-safe Modbus register mapping in Rust
 
-[![Crates.io](https://img.shields.io/crates/v/modbus-mapper.svg)](https://crates.io/crates/modbus-mapper)
-[![Documentation](https://docs.rs/modbus-mapper/badge.svg)](https://docs.rs/modbus-mapper)
-[![License](https://img.shields.io/crates/l/modbus-mapper.svg)](LICENSE)
-[![Build Status](https://img.shields.io/github/actions/workflow/status/your-org/tokio-modbus-mapper/ci.yml?branch=main)](https://github.com/your-org/tokio-modbus-mapper/actions)
+A compile-time layer over [tokio-modbus](https://github.com/slowtec/tokio-modbus) that generates efficient serialization/deserialization code for Modbus registers.
 
-A thin, compile-time layer over [tokio-modbus](https://github.com/slowtec/tokio-modbus) that automatically generates type-safe serialization and deserialization code for Modbus register mappings.
+## Why?
 
-## Why tokio-modbus-mapper?
-
-**Modbus is everywhere** in industrial automation, but working with raw register arrays is error-prone and tedious. This crate lets you work with strongly-typed Rust structs instead:
+**Working with raw register arrays is error-prone.** This crate lets you work with strongly-typed Rust structs:
 
 ```rust
-// ❌ Without tokio-modbus-mapper
+// ❌ Manual register handling
 let regs = client.read_holding_registers(0, 4).await?;
 let temp = f32::from_bits((regs[0] as u32) << 16 | regs[1] as u32);
 let pressure = regs[2];
-let status = regs[3];
 
-// ✅ With tokio-modbus-mapper
-let data = SensorData::read_from_modbus(&mut client).await?;
-println!("Temperature: {}°C", data.temperature);
+// ✅ Type-safe struct mapping
+#[derive(ModbusMapper)]
+#[modbus(base_address = 0, register_type = "holding")]
+struct SensorData {
+    #[modbus(address = 0)]
+    temperature: f32,      // Registers 0-1
+    #[modbus(address = 2)]
+    pressure: u16,         // Register 2
+}
+
+let registers = client.read_holding_registers(0, 3).await?;
+let data = SensorData::from_registers(&registers)?;
 ```
 
-## Features
+## Core Features
 
-- 🚀 **Zero runtime overhead** - All code generated at compile time
-- 🔒 **Type-safe** - Catch mapping errors before your code runs
-- 🪶 **Lightweight** - Thin layer on tokio-modbus, minimal dependencies
-- 🔧 **Configurable** - Per-field endianness, multiple register types, custom addresses
-- 📦 **Comprehensive** - Primitives, bit/byte packing, strings, Option, enums, nested structs, arrays
-- ⚡ **Async-ready** - Built on tokio-modbus for async I/O
-- 🎯 **Industrial-grade** - Designed for real-world SCADA and PLC applications
+- **Zero runtime overhead** - All code generated at compile time
+- **Type-safe** - Catch mapping errors at compile time
+- **Minimal** - Thin layer on tokio-modbus
+- **Efficient packing** - Bit packing (16 bools/register), byte packing (2×u8/register)
+- **Flexible** - Per-field endianness, multiple register types, custom addresses
+- **Complete Modbus support** - All 19 standard function codes
 
 ## Quick Start
-
-### Installation
-
-Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
 modbus-mapper = "0.1"
-tokio = { version = "1", features = ["full"] }
+tokio-modbus = "0.14"
 ```
 
-### Basic Example
+### Basic Usage
 
 ```rust
-use modbus_mapper::ModbusMapper;
-use tokio_modbus::prelude::*;
+use modbus_mapper::{ModbusMapper, ToRegisters, FromRegisters};
 
 #[derive(ModbusMapper)]
 #[modbus(base_address = 0, register_type = "holding")]
 struct SensorData {
     #[modbus(address = 0)]
-    temperature: f32,      // Registers 0-1 (IEEE 754, big-endian)
+    temperature: f32,      // IEEE 754, big-endian, 2 registers
 
     #[modbus(address = 2)]
-    pressure: u16,         // Register 2
+    pressure: u16,
 
     #[modbus(address = 3)]
-    humidity: u16,         // Register 3
+    humidity: i16,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Connect to Modbus device
-    let mut ctx = tcp::connect("192.168.1.100:502").await?;
+// Serialize to registers
+let data = SensorData { temperature: 25.5, pressure: 1013, humidity: 65 };
+let registers = data.to_registers();  // Vec<u16>
 
-    // Read entire struct with one call
-    let data = SensorData::read_from_modbus(&mut ctx).await?;
-
-    println!("Temperature: {:.1}°C", data.temperature);
-    println!("Pressure: {} Pa", data.pressure);
-    println!("Humidity: {}%", data.humidity);
-
-    Ok(())
-}
+// Deserialize from registers
+let decoded = SensorData::from_registers(&registers)?;
 ```
 
-## Examples
+## Advanced Features
 
-### Different Register Types
+### Endianness Control
 
 ```rust
 #[derive(ModbusMapper)]
-#[modbus(base_address = 0, register_type = "input")]  // Input registers
-struct ReadOnlyData {
-    #[modbus(address = 0)]
-    sensor_value: u32,
-}
-
-#[derive(ModbusMapper)]
-#[modbus(base_address = 100, register_type = "holding")]  // Holding registers
-struct ReadWriteData {
-    #[modbus(address = 100)]
-    setpoint: f32,
-}
-```
-
-### Configurable Endianness
-
-```rust
-#[derive(ModbusMapper)]
-#[modbus(base_address = 0, register_type = "holding", default_endian = "little")]
+#[modbus(default_endian = "little")]  // Global default
 struct MixedEndian {
     #[modbus(address = 0)]
-    value1: u32,  // Little-endian (uses default)
+    value1: u32,                      // Little-endian
 
     #[modbus(address = 2, endian = "big")]
-    value2: u32,  // Big-endian (override)
+    value2: u32,                      // Override to big-endian
 }
 ```
 
-### Complex Types
+### Bit Packing
+
+Pack up to 16 booleans into a single 16-bit register:
 
 ```rust
 #[derive(ModbusMapper)]
 #[modbus(base_address = 0, register_type = "holding")]
-struct ComplexDevice {
-    // Primitives
-    #[modbus(address = 0)]
-    temperature: f32,
-
-    // Booleans (stored as 0/1 in register)
-    #[modbus(address = 2)]
-    pump_running: bool,
-
-    // Signed integers
-    #[modbus(address = 3)]
-    flow_rate: i32,
-
-    // Optional values
-    #[modbus(address = 5)]
-    optional_sensor: Option<u16>,
-
-    // Enums
-    #[modbus(address = 6)]
-    mode: OperationMode,
-
-    // Arrays
-    #[modbus(address = 10)]
-    trend_data: [u16; 10],
-
-    // Fields to skip
-    #[modbus(skip)]
-    local_cache: String,
-}
-
-#[derive(ModbusEnum)]
-#[repr(u16)]
-enum OperationMode {
-    Idle = 0,
-    Running = 1,
-    Maintenance = 2,
-    Error = 3,
-}
-```
-
-### Bit Packing and Byte Packing
-
-Save register space by packing multiple booleans into bits or multiple bytes into a single register:
-
-```rust
-#[derive(ModbusMapper)]
-#[modbus(base_address = 0, register_type = "holding")]
-struct PackedData {
-    // Pack multiple booleans into bit positions of a single register
+struct StatusFlags {
     #[modbus(address = 0, bit = 0)]
     pump_running: bool,
 
@@ -182,269 +107,300 @@ struct PackedData {
     #[modbus(address = 0, bit = 15)]
     system_fault: bool,
 
-    // Pack two u8 values into high/low bytes of a single register
-    #[modbus(address = 1, offset = "high")]
-    error_code: u8,
-
-    #[modbus(address = 1, offset = "low")]
-    status_code: u8,
-
-    // Mix with normal fields
-    #[modbus(address = 2)]
-    temperature: f32,  // Registers 2-3
+    // All 4 booleans stored in register 0
 }
-
-// This struct uses only 4 registers instead of 8!
-// Register 0: 4 booleans packed into bits
-// Register 1: 2 u8 values packed into high/low bytes
-// Registers 2-3: f32 temperature
 ```
 
 **Benefits:**
-- **Save bandwidth**: Up to 16 booleans in one register
-- **Efficient**: Zero runtime overhead, all computed at compile time
+- **Bandwidth**: 16 booleans = 1 register instead of 16
+- **Zero-cost**: Compile-time bit manipulation
 - **Type-safe**: Bit positions (0-15) validated at compile time
-- **Flexible**: Mix packed and normal fields freely
 
-### Working with Multiple Devices
+### Byte Packing
 
-```rust
-use modbus_mapper::ModbusMapper;
-
-#[derive(ModbusMapper)]
-#[modbus(base_address = 0, register_type = "holding")]
-struct PLC1_Data {
-    #[modbus(address = 0)]
-    value: f32,
-}
-
-#[derive(ModbusMapper)]
-#[modbus(base_address = 100, register_type = "holding")]
-struct PLC2_Data {
-    #[modbus(address = 100)]
-    value: f32,
-}
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut plc1 = tcp::connect("192.168.1.100:502").await?;
-    let mut plc2 = tcp::connect("192.168.1.101:502").await?;
-
-    let data1 = PLC1_Data::read_from_modbus(&mut plc1).await?;
-    let data2 = PLC2_Data::read_from_modbus(&mut plc2).await?;
-
-    Ok(())
-}
-```
-
-### Writing to Devices
+Pack two u8/i8 values into high/low bytes of a single register:
 
 ```rust
 #[derive(ModbusMapper)]
 #[modbus(base_address = 0, register_type = "holding")]
-struct ControlData {
-    #[modbus(address = 0)]
-    setpoint: f32,
+struct BytePacked {
+    #[modbus(address = 0, offset = "high")]
+    error_code: u8,        // Bits 8-15
 
-    #[modbus(address = 2)]
-    enable: bool,
-}
+    #[modbus(address = 0, offset = "low")]
+    status_code: u8,       // Bits 0-7
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut ctx = tcp::connect("192.168.1.100:502").await?;
+    #[modbus(address = 1, offset = "high")]
+    temperature: i8,       // Signed byte in high position
 
-    let control = ControlData {
-        setpoint: 25.5,
-        enable: true,
-    };
-
-    // Write entire struct to device
-    control.write_to_modbus(&mut ctx).await?;
-
-    Ok(())
+    #[modbus(address = 1, offset = "low")]
+    humidity: i8,          // Signed byte in low position
 }
 ```
 
-## How It Works
+### Mixed Packing
 
-The `#[derive(ModbusMapper)]` macro generates three trait implementations at compile time:
+Combine normal fields with packed fields:
 
-1. **`ToRegisters`** - Serialize your struct to `Vec<u16>`
-2. **`FromRegisters`** - Deserialize from `&[u16]` with validation
-3. **`ModbusMetadata`** - Runtime introspection (addresses, types, etc.)
+```rust
+#[derive(ModbusMapper)]
+#[modbus(base_address = 0, register_type = "holding")]
+struct ControllerState {
+    #[modbus(address = 0)]
+    setpoint: f32,                    // Registers 0-1: normal field
 
-**Zero runtime cost** - Everything is computed at compile time. The generated code is as efficient as if you wrote it by hand.
+    #[modbus(address = 2, bit = 0)]
+    enable: bool,                     // Register 2, bit 0
+    #[modbus(address = 2, bit = 1)]
+    auto_mode: bool,                  // Register 2, bit 1
+    #[modbus(address = 2, bit = 2)]
+    alarm: bool,                      // Register 2, bit 2
 
-## Attribute Reference
+    #[modbus(address = 3, offset = "high")]
+    mode: u8,                         // Register 3, high byte
+    #[modbus(address = 3, offset = "low")]
+    state: u8,                        // Register 3, low byte
 
-### Struct-level Attributes
+    #[modbus(address = 4)]
+    counter: u32,                     // Registers 4-5: normal field
+}
+// Total: 6 registers (would be 10 without packing)
+```
+
+## Supported Types
+
+| Type | Registers | Endianness | Notes |
+|------|-----------|------------|-------|
+| `bool` | 1 | - | 0/1 or bit-packed (16/register) |
+| `u8`, `i8` | 1 | - | Upper bits zero or byte-packed (2/register) |
+| `u16`, `i16` | 1 | - | Native Modbus size |
+| `u32`, `i32` | 2 | ✓ | Configurable |
+| `u64`, `i64` | 4 | ✓ | Configurable |
+| `f32` | 2 | ✓ | IEEE 754 |
+| `f64` | 4 | ✓ | IEEE 754 |
+
+## Attributes
+
+### Struct-level
 
 ```rust
 #[modbus(
-    base_address = 0,              // Base address for all fields (default: 0)
-    register_type = "holding",     // "holding", "input", "coil", "discrete" (default: "holding")
+    base_address = 0,              // Base address (default: 0)
+    register_type = "holding",     // "holding", "input", "coil", "discrete"
     default_endian = "big"         // "big" or "little" (default: "big")
 )]
 ```
 
-### Field-level Attributes
+### Field-level
 
 ```rust
 #[modbus(
-    address = 0,                   // Register address (required unless skip)
-    endian = "big",                // Override endianness: "big" or "little"
-    bit = 0,                       // Bit position (0-15) for boolean fields (bit packing)
-    offset = "high",               // Byte offset: "high" or "low" for u8/i8 (byte packing)
-    skip,                          // Exclude field from Modbus mapping
-    readonly,                      // Field is read-only (server mode)
-    writeonly                      // Field is write-only (server mode)
+    address = 0,                   // Register address (required)
+    endian = "big",                // Override endianness
+    bit = 0,                       // Bit position (0-15) for bool
+    offset = "high",               // Byte offset ("high"/"low") for u8/i8
+    skip                           // Exclude from mapping
 )]
 ```
 
-**Packing attributes:**
-- `bit`: Pack boolean into specific bit position (0-15) of a register. Multiple booleans can share the same address.
-- `offset`: Pack u8/i8 into high byte (bits 8-15) or low byte (bits 0-7) of a register. Two bytes can share the same address.
+## Generated Traits
 
-## Supported Types
+The `#[derive(ModbusMapper)]` macro generates:
 
-| Type | Registers | Notes |
-|------|-----------|-------|
-| `bool` | 1 | Stored as 0/1, or use `bit` for packing |
-| `u8`, `i8` | 1 | Upper bits unused, or use `offset` for packing |
-| `u16`, `i16` | 1 | Native Modbus size |
-| `u32`, `i32` | 2 | Configurable endianness |
-| `u64`, `i64` | 4 | Configurable endianness |
-| `f32` | 2 | IEEE 754, configurable endianness |
-| `f64` | 4 | IEEE 754, configurable endianness |
-| `String` | N | Fixed-length, null-terminated |
-| `Option<T>` | N+1 | First register indicates presence |
-| `[T; N]` | N×size | Fixed-size arrays |
-| Custom enums | 1-4 | With `#[repr(u8/u16/u32/u64)]` |
-| Nested structs | N | Composable mappings |
-| **Bit-packed bools** | **1/16** | **Up to 16 bools packed in one register** |
-| **Byte-packed u8/i8** | **1/2** | **Two u8/i8 values packed in one register** |
-
-See [TYPE_SPEC.md](TYPE_SPEC.md) for complete details.
-
-## Design Principles
-
-1. **Zero-cost abstraction** - No runtime overhead vs. manual serialization
-2. **Type safety** - Catch errors at compile time, not in production
-3. **Minimal dependencies** - Thin layer on tokio-modbus
-4. **Industrial-grade** - Designed for real SCADA/PLC applications
-5. **Rust-first** - Idiomatic Rust API, not a C FFI wrapper
-
-## Comparison with Alternatives
-
-| Feature | tokio-modbus-mapper | Manual | Other crates |
-|---------|---------------------|--------|--------------|
-| Type safety | ✅ Compile-time | ❌ Runtime | ⚠️ Varies |
-| Boilerplate | ✅ None | ❌ High | ⚠️ Some |
-| Performance | ✅ Zero-cost | ✅ Manual tuning | ⚠️ Runtime overhead |
-| Async support | ✅ Native | ⚠️ Manual | ⚠️ Limited |
-| Endianness config | ✅ Per-field | ⚠️ Manual | ❌ Global only |
-| Complex types | ✅ Full support | ⚠️ Manual | ⚠️ Limited |
-
-## Documentation
-
-- [API Documentation](https://docs.rs/modbus-mapper)
-- [Implementation Plan](PLAN.md) - Detailed roadmap
-- [Type Specification](TYPE_SPEC.md) - Complete type support reference
-- [Examples](examples/) - More detailed examples
-
-## Roadmap
-
-- [x] **Phase 1**: Core infrastructure (error handling, endianness, traits)
-- [x] **Phase 2**: Primitive types support + bit/byte packing
-- [ ] **Phase 3**: Tokio-modbus integration (async read/write)
-- [ ] **Phase 4**: Advanced types (String, Option, enums)
-- [x] **Phase 5**: Bit fields and packed types (✓ bit packing, ✓ byte packing)
-- [ ] **Phase 6**: Nested structs and tuples
-- [ ] **Phase 7**: Arrays and collections
-- [ ] **Phase 8**: Server mode support
-- [ ] **Phase 9**: Comprehensive testing
-- [ ] **Phase 10**: Documentation and examples
-- [ ] **Phase 11**: Performance optimization and polish
-
-See [PLAN.md](PLAN.md) for detailed milestones.
-
-## Performance
-
-Zero runtime overhead - all work done at compile time:
-
+**1. `ToRegisters`** - Serialize struct to registers
 ```rust
-// Generated code is equivalent to hand-written:
-fn to_registers(&self) -> Vec<u16> {
-    let mut registers = Vec::with_capacity(4);
-    let temp_bits = self.temperature.to_bits();
-    registers.push((temp_bits >> 16) as u16);
-    registers.push(temp_bits as u16);
-    registers.push(self.pressure);
-    registers.push(self.humidity);
-    registers
+pub trait ToRegisters {
+    fn to_registers(&self) -> Vec<u16>;
+    fn register_count() -> u16;
 }
 ```
 
-**Benchmark results** (vs manual implementation):
-- Serialization: 0% overhead
-- Deserialization: 0% overhead
-- Binary size: +0 bytes (inlined)
-
-## Contributing
-
-Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
-### Development Setup
-
-```bash
-git clone https://github.com/your-org/tokio-modbus-mapper.git
-cd tokio-modbus-mapper
-cargo test
+**2. `FromRegisters`** - Deserialize from registers
+```rust
+pub trait FromRegisters {
+    fn from_registers(registers: &[u16]) -> Result<Self>;
+}
 ```
 
-### Running Tests
-
-```bash
-# Run all tests
-cargo test
-
-# Run with coverage
-cargo tarpaulin --out Html
-
-# Check formatting
-cargo fmt --check
-
-# Run clippy
-cargo clippy -- -D warnings
+**3. `ModbusMetadata`** - Runtime introspection
+```rust
+pub trait ModbusMetadata {
+    fn base_address() -> u16;
+    fn register_type() -> RegisterType;
+    fn field_address(field_name: &str) -> Option<u16>;
+    fn field_register_count(field_name: &str) -> Option<u16>;
+}
 ```
 
-## License
+## Function Code Support
 
-Licensed under either of:
+Complete enumeration of 19 standard Modbus function codes:
 
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
-- MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
+```rust
+use modbus_mapper::FunctionCode;
 
-at your option.
+// Bit access
+FunctionCode::ReadCoils                    // 0x01
+FunctionCode::ReadDiscreteInputs           // 0x02
+FunctionCode::WriteSingleCoil              // 0x05
+FunctionCode::WriteMultipleCoils           // 0x0F
 
-### Contribution
+// Register access
+FunctionCode::ReadHoldingRegisters         // 0x03
+FunctionCode::ReadInputRegisters           // 0x04
+FunctionCode::WriteSingleRegister          // 0x06
+FunctionCode::WriteMultipleRegisters       // 0x10
+FunctionCode::ReadWriteMultipleRegisters   // 0x17
 
-Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in the work by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.
+// Diagnostics
+FunctionCode::ReadExceptionStatus          // 0x07
+FunctionCode::Diagnostics                  // 0x08
+FunctionCode::GetCommEventCounter          // 0x0B
+FunctionCode::GetCommEventLog              // 0x0C
 
-## Acknowledgments
+// File record
+FunctionCode::ReadFileRecord               // 0x14
+FunctionCode::WriteFileRecord              // 0x15
 
-- Built on top of [tokio-modbus](https://github.com/slowtec/tokio-modbus)
-- Inspired by [modbus-core](https://github.com/slowtec/modbus-core)
-- Uses [darling](https://github.com/TedDriggs/darling) for attribute parsing
+// Advanced
+FunctionCode::MaskWriteRegister            // 0x16
+FunctionCode::ReadFifoQueue                // 0x18
+FunctionCode::ReportServerId               // 0x11
+FunctionCode::EncapsulatedInterfaceTransport // 0x2B
+```
 
-## Support
+Helper methods:
+```rust
+let fc = FunctionCode::ReadHoldingRegisters;
+fc.is_read();           // true
+fc.is_write();          // false
+fc.is_bit_access();     // false
+fc.is_register_access(); // true
+fc.name();              // "Read Holding Registers"
+fc.as_u8();             // 0x03
+```
 
-- 📖 [Documentation](https://docs.rs/modbus-mapper)
-- 💬 [Discussions](https://github.com/your-org/tokio-modbus-mapper/discussions)
-- 🐛 [Issue Tracker](https://github.com/your-org/tokio-modbus-mapper/issues)
-- 💡 [Feature Requests](https://github.com/your-org/tokio-modbus-mapper/issues/new?labels=enhancement)
+## How It Works
 
----
+All work happens at **compile time**. The generated code is zero-cost:
 
-**Made with ❤️ for the industrial automation community**
+```rust
+// Your code
+#[derive(ModbusMapper)]
+#[modbus(base_address = 0, register_type = "holding")]
+struct Data {
+    #[modbus(address = 0)]
+    temp: f32,
+    #[modbus(address = 2, bit = 0)]
+    flag: bool,
+}
+
+// Generated code (simplified)
+impl ToRegisters for Data {
+    fn to_registers(&self) -> Vec<u16> {
+        let mut registers = Vec::with_capacity(3);
+        let bits = self.temp.to_bits();
+        registers.push((bits >> 16) as u16);
+        registers.push(bits as u16);
+        registers.push(if self.flag { 1 } else { 0 });
+        registers
+    }
+
+    fn register_count() -> u16 { 3 }
+}
+```
+
+**No runtime overhead.** The generated code is as efficient as hand-written.
+
+## Validation
+
+Compile-time checks prevent common errors:
+
+```rust
+// ❌ Compile error: bit position out of range
+#[modbus(address = 0, bit = 16)]  // Max is 15
+invalid_bit: bool,
+
+// ❌ Compile error: bit attribute on non-bool
+#[modbus(address = 0, bit = 0)]
+not_bool: u8,
+
+// ❌ Compile error: offset attribute on wrong type
+#[modbus(address = 0, offset = "high")]
+not_byte: u16,
+
+// ❌ Compile error: both bit and offset
+#[modbus(address = 0, bit = 0, offset = "high")]
+conflicting: bool,
+```
+
+Runtime validation:
+```rust
+// Register count mismatch
+let wrong_size = vec![0u16; 5];
+let result = Data::from_registers(&wrong_size);
+// Err(ModbusMapperError::RegisterCountMismatch { expected: 3, actual: 5 })
+```
+
+## Design Principles
+
+1. **Zero-cost abstraction** - No runtime overhead
+2. **Type safety first** - Catch errors at compile time
+3. **Minimal dependencies** - Thin layer on tokio-modbus
+4. **Industrial-grade** - Complete Modbus protocol support
+5. **Composable** - Works with existing tokio-modbus code
+
+## Current Status
+
+**Implemented (Phase 1, 2, 5):**
+- ✅ Core traits (ToRegisters, FromRegisters, ModbusMetadata)
+- ✅ All primitive types (bool, u8-u64, i8-i64, f32, f64)
+- ✅ Bit packing (up to 16 bools per register)
+- ✅ Byte packing (2× u8/i8 per register)
+- ✅ Configurable endianness (per-field)
+- ✅ Complete FunctionCode enumeration (19 codes)
+- ✅ RegisterType with function code mappings
+- ✅ BitPosition and ByteOffset helper types
+- ✅ 35+ comprehensive tests
+
+**Planned:**
+- Tokio-modbus integration helpers (async read/write)
+- Advanced types (String, Option, enums, arrays)
+- Nested struct support
+- Server mode (field-level read/write control)
+
+## Performance
+
+**Zero overhead** - identical to hand-written code:
+
+```bash
+$ cargo build --release
+   Compiling modbus-mapper v0.1.0
+   # All code generated at compile time
+   # No runtime serialization framework
+   # No vtables, no dynamic dispatch
+   # Direct register access
+```
+
+Generated code compiles to optimal assembly with no indirection.
+
+## Testing
+
+```bash
+# All tests
+cargo test
+
+# Specific test suite
+cargo test --test test_packing
+
+# With output
+cargo test -- --nocapture
+
+# Documentation tests
+cargo test --doc
+```
+
+**Test coverage:**
+- 12 core tests (endianness, function codes, bit positions)
+- 16 packing tests (bit/byte packing, mixed, roundtrip)
+- 7 primitive type tests (all types, metadata, errors)
