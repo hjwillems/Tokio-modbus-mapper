@@ -1,0 +1,35 @@
+[package]
+name = "modbus-mapper"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Zero-cost procedural macro for mapping Rust types to Modbus registers"
+
+[dependencies]
+# Re-export the derive macro
+modbus-mapper-derive = { path = "../modbus-mapper-derive" }
+
+# Core Modbus functionality
+tokio-modbus.workspace = true
+
+# Async runtime (minimal features, re-exported from tokio-modbus)
+tokio = { workspace = true, features = ["rt"] }
+
+# Lightweight error handling
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+tokio-test = "0.4"
+
+[features]
+default = []
+# Enable if we need explicit endianness control
+byteorder = []
