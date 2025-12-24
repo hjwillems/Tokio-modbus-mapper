@@ -1,11 +1,37 @@
 # Type Specification - What Can and Cannot Be Mapped
 
-## Design Principle
+## Design Principles
+
+### Modbus Constraints
 
 **Modbus Constraint**: Modbus operates with fixed-size, contiguous register blocks. Every type must have:
 1. **Compile-time known size** - We must know exactly how many registers it needs
 2. **Deterministic layout** - Same data always maps to same registers
 3. **No runtime indirection** - Direct memory-to-register mapping
+
+### Zero-Cost Abstraction
+
+This crate is a **thin, lightweight layer** on top of `tokio-modbus`:
+
+**Core Principles**:
+- ✅ **Zero runtime overhead** - All logic generated at compile time
+- ✅ **Minimal dependencies** - Only `tokio-modbus` + `thiserror`
+- ✅ **No heap allocations** in conversion code (stack-based)
+- ✅ **Inline-friendly** - Generated functions are small and inlineable
+- ✅ **Pay for what you use** - Unused features generate no code
+
+**What this is**:
+- A derive macro that generates perfect conversion code
+- A thin wrapper around `tokio-modbus` I/O operations
+- Compile-time validation preventing runtime errors
+
+**What this is NOT**:
+- Not a framework - just code generation
+- Not a Modbus implementation - delegates to `tokio-modbus`
+- Not heavy - minimal binary size impact
+
+**Philosophy**:
+> "Complete type support through compile-time code generation, not runtime complexity."
 
 ---
 

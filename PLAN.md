@@ -24,7 +24,36 @@ A Rust procedural macro crate that automatically maps Rust struct fields to Modb
 - Field-level and struct-level read/write operations
 - Thread-safe server patterns
 
-## 2. Crate Structure
+## 2. Design Philosophy
+
+### Thin, Zero-Cost Abstraction Layer
+
+This crate is designed as an **extremely lightweight layer** on top of `tokio-modbus`:
+
+**Core Principles**:
+- ✅ **Zero runtime overhead** - All work done at compile time via proc macros
+- ✅ **No runtime dependencies** except `tokio-modbus` (and `thiserror` for errors)
+- ✅ **Generated code only** - No complex runtime logic
+- ✅ **Compile-time validation** - Catch errors before running
+- ✅ **No heap allocations** in hot path (register conversions use stack)
+- ✅ **Inline-friendly** - All generated methods can be inlined
+- ✅ **Minimal binary size impact** - Only pay for what you use
+
+**What this is NOT**:
+- ❌ Not a framework - just a derive macro
+- ❌ Not a Modbus implementation - delegates to `tokio-modbus`
+- ❌ Not a runtime - pure compile-time code generation
+- ❌ Not opinionated - you control the mapping
+
+**Size Budget**:
+- Proc macro crate: Can be large (only used during compilation)
+- Runtime library: < 50 KB compiled
+- Generated code: Minimal, inlineable functions
+
+**Philosophy**:
+> "The best abstraction is one you don't pay for. Generate perfect code at compile time, run it with zero overhead at runtime."
+
+## 3. Crate Structure
 
 ```
 tokio-modbus-mapper/
@@ -310,21 +339,48 @@ pub enum ModbusMapperError {
 
 ## 10. Dependencies
 
+### Runtime Dependencies (Minimal!)
+
+The runtime crate has **only essential dependencies**:
+
 ```toml
 # modbus-mapper/Cargo.toml
 [dependencies]
+# Core Modbus functionality - our only heavy dependency
 tokio-modbus = "0.14"
-tokio = { version = "1", features = ["full"] }
-thiserror = "1"
-byteorder = "1"
 
+# Only needed for async traits in generated code (re-export from tokio-modbus)
+tokio = { version = "1", default-features = false }
+
+# Lightweight error handling
+thiserror = "1"
+
+# Optional: Only if we need explicit byte order control
+# Most conversions can use native endianness functions
+byteorder = { version = "1", optional = true }
+```
+
+**Size impact**: ~200 KB (mostly tokio-modbus)
+
+### Compile-Time Dependencies (Proc Macro)
+
+The proc macro crate can be heavier since it's only used during compilation:
+
+```toml
 # modbus-mapper-derive/Cargo.toml
 [dependencies]
-syn = { version = "2", features = ["full"] }
+# Parsing Rust syntax
+syn = { version = "2", features = ["full", "extra-traits"] }
+
+# Code generation
 quote = "1"
 proc-macro2 = "1"
-darling = "0.20"  # For parsing attributes easily
+
+# Attribute parsing helper (much cleaner than manual parsing)
+darling = "0.20"
 ```
+
+**Note**: Proc macro dependencies don't affect your final binary size!
 
 ## 11. Implementation Phases
 
