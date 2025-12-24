@@ -1,6 +1,7 @@
 //! Attribute parsing for ModbusMapper derive macro.
 
 use darling::{ast, FromDeriveInput, FromField};
+use quote;
 use syn::{Ident, Type};
 
 /// Struct-level attributes for `#[modbus(...)]`.
@@ -27,7 +28,7 @@ pub struct ModbusMapperOpts {
 }
 
 /// Field-level attributes for `#[modbus(...)]`.
-#[derive(Debug, FromField)]
+#[derive(Debug, Clone, FromField)]
 #[darling(attributes(modbus))]
 pub struct ModbusFieldOpts {
     /// The field identifier.
@@ -43,6 +44,14 @@ pub struct ModbusFieldOpts {
     /// Endianness for this field: "big" or "little" (optional).
     #[darling(default)]
     pub endian: Option<String>,
+
+    /// Bit position within register (0-15) for boolean fields.
+    #[darling(default)]
+    pub bit: Option<u8>,
+
+    /// Byte offset within register: "high" or "low" for u8/i8 fields.
+    #[darling(default)]
+    pub offset: Option<String>,
 
     /// Skip this field in Modbus mapping.
     #[darling(default)]
@@ -167,6 +176,63 @@ pub fn validate_field_attrs(
     if field.readonly && field.writeonly {
         return Err(darling::Error::custom(format!(
             "Field '{}' cannot be both 'readonly' and 'writeonly'",
+            field.name()
+        ))
+        .with_span(field.ident.as_ref().unwrap()));
+    }
+
+    // Validate bit position
+    if let Some(bit) = field.bit {
+        if bit > 15 {
+            return Err(darling::Error::custom(format!(
+                "Bit position {} for field '{}' must be 0-15",
+                bit,
+                field.name()
+            ))
+            .with_span(field.ident.as_ref().unwrap()));
+        }
+
+        // Check type is bool when bit is specified
+        let ty = &field.ty;
+        let type_str = quote::quote! { #ty }.to_string();
+        if type_str != "bool" {
+            return Err(darling::Error::custom(format!(
+                "Field '{}' with 'bit' attribute must be of type bool, found {}",
+                field.name(),
+                type_str
+            ))
+            .with_span(field.ident.as_ref().unwrap()));
+        }
+    }
+
+    // Validate byte offset
+    if let Some(ref offset) = field.offset {
+        if !matches!(offset.as_str(), "high" | "low") {
+            return Err(darling::Error::custom(format!(
+                "Invalid offset '{}' for field '{}'. Must be 'high' or 'low'",
+                offset,
+                field.name()
+            ))
+            .with_span(field.ident.as_ref().unwrap()));
+        }
+
+        // Check type is u8 or i8 when offset is specified
+        let ty = &field.ty;
+        let type_str = quote::quote! { #ty }.to_string();
+        if type_str != "u8" && type_str != "i8" {
+            return Err(darling::Error::custom(format!(
+                "Field '{}' with 'offset' attribute must be of type u8 or i8, found {}",
+                field.name(),
+                type_str
+            ))
+            .with_span(field.ident.as_ref().unwrap()));
+        }
+    }
+
+    // Cannot have both bit and offset
+    if field.bit.is_some() && field.offset.is_some() {
+        return Err(darling::Error::custom(format!(
+            "Field '{}' cannot have both 'bit' and 'offset' attributes",
             field.name()
         ))
         .with_span(field.ident.as_ref().unwrap()));
