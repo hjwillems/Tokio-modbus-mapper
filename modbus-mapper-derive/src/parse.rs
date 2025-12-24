@@ -28,7 +28,7 @@ pub struct ModbusMapperOpts {
 }
 
 /// Field-level attributes for `#[modbus(...)]`.
-#[derive(Debug, FromField)]
+#[derive(Debug, Clone, FromField)]
 #[darling(attributes(modbus))]
 pub struct ModbusFieldOpts {
     /// The field identifier.

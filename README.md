@@ -31,7 +31,7 @@ println!("Temperature: {}°C", data.temperature);
 - 🔒 **Type-safe** - Catch mapping errors before your code runs
 - 🪶 **Lightweight** - Thin layer on tokio-modbus, minimal dependencies
 - 🔧 **Configurable** - Per-field endianness, multiple register types, custom addresses
-- 📦 **Comprehensive** - Primitives, strings, Option, enums, bit fields, nested structs, arrays
+- 📦 **Comprehensive** - Primitives, bit/byte packing, strings, Option, enums, nested structs, arrays
 - ⚡ **Async-ready** - Built on tokio-modbus for async I/O
 - 🎯 **Industrial-grade** - Designed for real-world SCADA and PLC applications
 
@@ -161,6 +161,51 @@ enum OperationMode {
 }
 ```
 
+### Bit Packing and Byte Packing
+
+Save register space by packing multiple booleans into bits or multiple bytes into a single register:
+
+```rust
+#[derive(ModbusMapper)]
+#[modbus(base_address = 0, register_type = "holding")]
+struct PackedData {
+    // Pack multiple booleans into bit positions of a single register
+    #[modbus(address = 0, bit = 0)]
+    pump_running: bool,
+
+    #[modbus(address = 0, bit = 1)]
+    valve_open: bool,
+
+    #[modbus(address = 0, bit = 2)]
+    alarm_active: bool,
+
+    #[modbus(address = 0, bit = 15)]
+    system_fault: bool,
+
+    // Pack two u8 values into high/low bytes of a single register
+    #[modbus(address = 1, offset = "high")]
+    error_code: u8,
+
+    #[modbus(address = 1, offset = "low")]
+    status_code: u8,
+
+    // Mix with normal fields
+    #[modbus(address = 2)]
+    temperature: f32,  // Registers 2-3
+}
+
+// This struct uses only 4 registers instead of 8!
+// Register 0: 4 booleans packed into bits
+// Register 1: 2 u8 values packed into high/low bytes
+// Registers 2-3: f32 temperature
+```
+
+**Benefits:**
+- **Save bandwidth**: Up to 16 booleans in one register
+- **Efficient**: Zero runtime overhead, all computed at compile time
+- **Type-safe**: Bit positions (0-15) validated at compile time
+- **Flexible**: Mix packed and normal fields freely
+
 ### Working with Multiple Devices
 
 ```rust
@@ -249,18 +294,24 @@ The `#[derive(ModbusMapper)]` macro generates three trait implementations at com
 #[modbus(
     address = 0,                   // Register address (required unless skip)
     endian = "big",                // Override endianness: "big" or "little"
+    bit = 0,                       // Bit position (0-15) for boolean fields (bit packing)
+    offset = "high",               // Byte offset: "high" or "low" for u8/i8 (byte packing)
     skip,                          // Exclude field from Modbus mapping
     readonly,                      // Field is read-only (server mode)
     writeonly                      // Field is write-only (server mode)
 )]
 ```
 
+**Packing attributes:**
+- `bit`: Pack boolean into specific bit position (0-15) of a register. Multiple booleans can share the same address.
+- `offset`: Pack u8/i8 into high byte (bits 8-15) or low byte (bits 0-7) of a register. Two bytes can share the same address.
+
 ## Supported Types
 
 | Type | Registers | Notes |
 |------|-----------|-------|
-| `bool` | 1 | Stored as 0/1 |
-| `u8`, `i8` | 1 | Upper bits unused |
+| `bool` | 1 | Stored as 0/1, or use `bit` for packing |
+| `u8`, `i8` | 1 | Upper bits unused, or use `offset` for packing |
 | `u16`, `i16` | 1 | Native Modbus size |
 | `u32`, `i32` | 2 | Configurable endianness |
 | `u64`, `i64` | 4 | Configurable endianness |
@@ -271,7 +322,8 @@ The `#[derive(ModbusMapper)]` macro generates three trait implementations at com
 | `[T; N]` | N×size | Fixed-size arrays |
 | Custom enums | 1-4 | With `#[repr(u8/u16/u32/u64)]` |
 | Nested structs | N | Composable mappings |
-| Bit fields | Shared | Multiple bools in one register |
+| **Bit-packed bools** | **1/16** | **Up to 16 bools packed in one register** |
+| **Byte-packed u8/i8** | **1/2** | **Two u8/i8 values packed in one register** |
 
 See [TYPE_SPEC.md](TYPE_SPEC.md) for complete details.
 
@@ -304,10 +356,10 @@ See [TYPE_SPEC.md](TYPE_SPEC.md) for complete details.
 ## Roadmap
 
 - [x] **Phase 1**: Core infrastructure (error handling, endianness, traits)
-- [x] **Phase 2**: Primitive types support
+- [x] **Phase 2**: Primitive types support + bit/byte packing
 - [ ] **Phase 3**: Tokio-modbus integration (async read/write)
 - [ ] **Phase 4**: Advanced types (String, Option, enums)
-- [ ] **Phase 5**: Bit fields and packed types
+- [x] **Phase 5**: Bit fields and packed types (✓ bit packing, ✓ byte packing)
 - [ ] **Phase 6**: Nested structs and tuples
 - [ ] **Phase 7**: Arrays and collections
 - [ ] **Phase 8**: Server mode support
