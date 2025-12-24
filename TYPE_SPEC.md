@@ -166,6 +166,68 @@ struct ArrayData {
 
 ---
 
+### 6. Fixed-Length Strings
+
+Strings with compile-time specified maximum length:
+
+| Encoding | Bytes per Register | Max Chars per Register |
+|----------|-------------------|------------------------|
+| ASCII | 2 | 2 |
+| UTF-8 | 2 | 1-2 (variable) |
+
+**Storage format**: 2 ASCII/UTF-8 bytes per 16-bit register (big-endian byte order)
+
+**Example**:
+```rust
+#[derive(ModbusMapper)]
+struct DeviceInfo {
+    // 16 registers = 32 bytes max
+    #[modbus(address = 0, length = 16, encoding = "ascii", padding = "null")]
+    device_name: String,
+
+    // 8 registers = 16 bytes max
+    #[modbus(address = 16, length = 8, encoding = "ascii", padding = "space")]
+    serial_number: String,
+
+    #[modbus(address = 24)]
+    firmware_version: u16,
+}
+```
+
+**Attribute options**:
+- `length = N` - **Required**: Number of registers to allocate (N registers = 2N bytes)
+- `encoding = "ascii"` - Optional: Character encoding (default: "ascii")
+  - `"ascii"` - ASCII only (0-127), invalid chars become '?'
+  - `"utf8"` - Full UTF-8 support
+- `padding = "null"` - Optional: How to pad short strings (default: "null")
+  - `"null"` - Null bytes (0x00) for remainder
+  - `"space"` - Space chars (0x20) for remainder
+  - `"none"` - Leave remainder unchanged (read existing values)
+
+**Behavior**:
+- **Write**: String is truncated if too long, padded if too short
+- **Read**: String is read until null terminator or max length
+- **Validation**: Compile error if `length` attribute missing
+
+**Register layout example**:
+```rust
+// device_name = "PLC-1" with length=4, padding="null"
+// Registers: ['PL', 'C-', '1\0', '\0\0']
+// Register 0: 0x504C (P=0x50, L=0x4C)
+// Register 1: 0x432D (C=0x43, -=0x2D)
+// Register 2: 0x3100 (1=0x31, \0=0x00)
+// Register 3: 0x0000 (\0=0x00, \0=0x00)
+```
+
+**Rules**:
+- ✅ Length must be specified at compile time
+- ✅ Strings exceeding length are truncated (no error)
+- ✅ Empty strings write padding characters
+- ⚠️ UTF-8 multi-byte chars may be truncated mid-sequence if length too small
+- ❌ No dynamic-length strings (must specify `length`)
+
+---
+
 ## ❌ UNSUPPORTED TYPES (Version 1.0)
 
 ### 1. Dynamic-Size Types
@@ -173,8 +235,7 @@ struct ArrayData {
 **NOT SUPPORTED - No compile-time size**:
 
 ```rust
-String           // Heap-allocated, unknown size
-Vec<T>           // Dynamic length
+Vec<T>           // Dynamic length vector
 Box<T>           // Heap pointer
 Rc<T>, Arc<T>    // Reference counted pointers
 Cow<T>           // Clone-on-write
@@ -182,12 +243,7 @@ Cow<T>           // Clone-on-write
 
 **Why**: Modbus requires knowing exact register count at compile time. These types can grow or shrink.
 
-**Alternative** (Future):
-```rust
-// Possible in v2.0 with explicit length:
-#[modbus(address = 0, length = 16)]  // Fixed 16 registers = 32 bytes
-device_name: String,
-```
+**Note**: `String` IS supported but requires explicit `length` attribute (see section 6 above)
 
 ---
 
@@ -415,13 +471,14 @@ struct BooleanFlags {
 
 The macro will enforce these at **compile time**:
 
-1. ✅ All field types are supported primitives or arrays thereof
+1. ✅ All field types are supported primitives, strings, or arrays thereof
 2. ✅ All addresses are specified (no auto-allocation in v1.0)
 3. ✅ No address overlaps between fields
 4. ✅ All fields use compatible register types
 5. ✅ Array lengths are compile-time constants
-6. ✅ Endianness only on multi-register types (u32, u64, f32, f64)
-7. ✅ `bool` fields only in coil/discrete structs
+6. ✅ String fields must have `length` attribute specified
+7. ✅ Endianness only on multi-register types (u32, u64, f32, f64)
+8. ✅ `bool` fields only in coil/discrete structs
 
 **Example validation errors**:
 ```rust
@@ -444,19 +501,13 @@ struct Invalid {
 
 Types that **could** be supported with more complex implementation:
 
-### 1. Fixed-Length Strings
-```rust
-#[modbus(address = 0, length = 16)]  // 16 registers = 32 bytes
-device_name: String,
-```
-
-### 2. Nullable Types
+### 1. Nullable Types
 ```rust
 #[modbus(address = 0, nullable = 0xFFFF)]
 optional_value: Option<u16>,
 ```
 
-### 3. Enums with #[repr]
+### 2. Enums with #[repr]
 ```rust
 #[derive(ModbusEnum)]
 #[repr(u16)]
@@ -467,7 +518,7 @@ enum Mode {
 }
 ```
 
-### 4. Nested Structs with Flattening
+### 3. Nested Structs with Flattening
 ```rust
 #[derive(ModbusMapper)]
 struct Outer {
@@ -476,7 +527,7 @@ struct Outer {
 }
 ```
 
-### 5. Bit Fields
+### 4. Bit Fields
 ```rust
 #[modbus(address = 0, bit = 0)]
 flag1: bool,
@@ -485,7 +536,7 @@ flag1: bool,
 flag2: bool,
 ```
 
-### 6. Custom Types via Trait
+### 5. Custom Types via Trait
 ```rust
 trait ModbusSerialize {
     fn to_registers(&self) -> Vec<u16>;
@@ -505,10 +556,11 @@ impl ModbusSerialize for MyCustomType { ... }
 - All primitive integers: `u8, u16, u32, u64, i8, i16, i32, i64`
 - Floating point: `f32, f64`
 - Boolean: `bool` (in dedicated coil/discrete structs)
+- Fixed-length strings: `String` (with required `length` attribute)
 - Fixed-size arrays: `[T; N]` where T is any supported primitive
 
 ### ❌ Unsupported (v1.0)
-- Dynamic types: `String, Vec<T>, Box<T>`
+- Dynamic types: `Vec<T>, Box<T>, Rc<T>, Arc<T>`
 - Nullable types: `Option<T>`
 - Enums: `enum { ... }`
 - Nested structs
