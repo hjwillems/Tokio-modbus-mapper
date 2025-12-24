@@ -1,0 +1,36 @@
+[workspace]
+members = [
+    "modbus-mapper",
+    "modbus-mapper-derive",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+authors = ["Tokio Modbus Mapper Contributors"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/hjwillems/Tokio-modbus-mapper"
+homepage = "https://github.com/hjwillems/Tokio-modbus-mapper"
+documentation = "https://docs.rs/modbus-mapper"
+keywords = ["modbus", "tokio", "industrial", "automation", "iot"]
+categories = ["network-programming", "embedded", "asynchronous"]
+
+[workspace.dependencies]
+# Runtime dependencies
+tokio-modbus = "0.14"
+tokio = { version = "1", default-features = false }
+thiserror = "1"
+
+# Proc macro dependencies
+syn = { version = "2", features = ["full", "extra-traits"] }
+quote = "1"
+proc-macro2 = "1"
+darling = "0.20"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
