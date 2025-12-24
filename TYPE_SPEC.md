@@ -228,7 +228,240 @@ struct DeviceInfo {
 
 ---
 
-## ❌ UNSUPPORTED TYPES (Version 1.0)
+### 7. Option<T> (Nullable Types)
+
+Optional values with configurable None representation:
+
+| Strategy | Attribute | Description |
+|----------|-----------|-------------|
+| Sentinel Value | `none_value = N` | Specific value means None |
+| NaN | `none_value = "nan"` | For f32/f64, use NaN |
+| Separate Flag | `none_flag = addr` | Separate bool register |
+
+**Example - Sentinel values**:
+```rust
+#[derive(ModbusMapper)]
+struct Sensor {
+    // 0xFFFF means None
+    #[modbus(address = 0, none_value = 0xFFFF)]
+    optional_reading: Option<u16>,
+
+    // NaN means None (for floats)
+    #[modbus(address = 1, none_value = "nan")]
+    optional_temp: Option<f32>,
+
+    // 0 means None, -1 to match device behavior
+    #[modbus(address = 3, none_value = 0)]
+    optional_count: Option<i16>,
+}
+```
+
+**Example - Separate validity flags**:
+```rust
+#[derive(ModbusMapper)]
+#[modbus(register_type = "holding")]
+struct Data {
+    #[modbus(address = 0, none_flag = 100)]  // Validity bit at register 100, bit 0
+    value1: Option<u16>,
+
+    #[modbus(address = 1, none_flag = 100, none_flag_bit = 1)]  // Bit 1 of register 100
+    value2: Option<u16>,
+}
+```
+
+**Rules**:
+- ✅ Must specify either `none_value` or `none_flag` attribute
+- ✅ `none_value = "nan"` only valid for f32/f64
+- ✅ Sentinel value must be valid for inner type
+- ✅ `none_flag` can reference same register for multiple fields (different bits)
+
+---
+
+### 8. Enums with #[repr]
+
+Enums with explicit representation:
+
+```rust
+#[derive(ModbusMapper)]
+#[modbus(register_type = "holding")]
+struct Controller {
+    #[modbus(address = 0)]
+    mode: OperationMode,
+
+    #[modbus(address = 1)]
+    status: DeviceStatus,
+}
+
+// Maps to u16 register
+#[derive(ModbusEnum)]
+#[repr(u16)]
+enum OperationMode {
+    Idle = 0,
+    Running = 1,
+    Maintenance = 2,
+    Error = 3,
+}
+
+// Maps to u8 (uses lower byte of register)
+#[derive(ModbusEnum)]
+#[repr(u8)]
+enum DeviceStatus {
+    Stopped = 0,
+    Starting = 1,
+    Active = 2,
+}
+```
+
+**Supported representations**:
+- `#[repr(u8)]` - 1 register (lower byte)
+- `#[repr(u16)]` - 1 register
+- `#[repr(u32)]` - 2 registers
+- `#[repr(u64)]` - 4 registers
+- `#[repr(i8)]`, `#[repr(i16)]`, `#[repr(i32)]`, `#[repr(i64)]` - Signed variants
+
+**Validation**:
+- Read validates discriminant is valid variant
+- Invalid discriminant returns `ModbusMapperError::InvalidEnum`
+- Compile error if enum has no `#[repr]` attribute
+
+---
+
+### 9. Bit Fields
+
+Pack multiple boolean flags into a single register:
+
+```rust
+#[derive(ModbusMapper)]
+struct StatusFlags {
+    #[modbus(address = 0, bit = 0)]
+    motor_running: bool,
+
+    #[modbus(address = 0, bit = 1)]
+    pump_active: bool,
+
+    #[modbus(address = 0, bit = 2)]
+    alarm_active: bool,
+
+    #[modbus(address = 0, bit = 3)]
+    maintenance_mode: bool,
+
+    #[modbus(address = 0, bits = 4..8)]  // Bits 4-7 (4 bits)
+    error_code: u8,
+
+    #[modbus(address = 1)]
+    temperature: i16,
+}
+```
+
+**Rules**:
+- ✅ Multiple fields can share same register address
+- ✅ `bit = N` for single bit (0-15)
+- ✅ `bits = N..M` for bit range (returns u8/u16 depending on size)
+- ✅ Can mix bit fields with regular fields at different addresses
+- ❌ Cannot have overlapping bit ranges
+- ❌ Cannot use coil register type with bit fields (use holding/input)
+
+**Register layout**:
+```
+Register 0: [bit15][bit14]...[alarm:bit2][pump:bit1][motor:bit0]
+Register 1: temperature (full 16 bits)
+```
+
+---
+
+### 10. Nested Structs (Flattening)
+
+Compose structs from other ModbusMapper structs:
+
+```rust
+#[derive(ModbusMapper)]
+#[modbus(base_address = 0)]
+struct Point3D {
+    #[modbus(address = 0)]
+    x: f32,  // Registers 0-1
+
+    #[modbus(address = 2)]
+    y: f32,  // Registers 2-3
+
+    #[modbus(address = 4)]
+    z: f32,  // Registers 4-7
+}
+
+#[derive(ModbusMapper)]
+struct RobotState {
+    #[modbus(address = 0, flatten)]
+    position: Point3D,      // Registers 0-5
+
+    #[modbus(address = 6, flatten)]
+    velocity: Point3D,      // Registers 6-11
+
+    #[modbus(address = 12)]
+    timestamp: u32,         // Registers 12-13
+}
+```
+
+**Rules**:
+- ✅ Nested struct must also derive `ModbusMapper`
+- ✅ `flatten` attribute causes fields to be inline
+- ✅ Addresses in nested struct are relative to specified address
+- ✅ Can nest multiple levels deep
+- ✅ Register type must match between parent and nested struct
+
+---
+
+### 11. Tuples
+
+Fixed-size tuple types:
+
+```rust
+#[derive(ModbusMapper)]
+struct Measurements {
+    // Tuple: first element at address, second at address+1
+    #[modbus(address = 0)]
+    min_max: (u16, u16),    // Registers 0-1
+
+    #[modbus(address = 2)]
+    coordinates: (f32, f32), // Registers 2-5 (2 registers each)
+}
+```
+
+**Supported tuple elements**:
+- Any supported primitive type
+- Tuples up to 8 elements: `(T1, T2, ..., T8)`
+- Elements mapped sequentially
+
+**Rules**:
+- ✅ All elements must be supported types
+- ✅ Total register count = sum of element register counts
+- ❌ No nested tuples: `((u16, u16), u16)` not supported
+
+---
+
+### 12. Multi-dimensional Arrays
+
+Fixed-size multi-dimensional arrays:
+
+```rust
+#[derive(ModbusMapper)]
+struct ImageSensor {
+    // 2D array: 10 rows × 8 columns = 80 registers
+    #[modbus(address = 0)]
+    pixel_data: [[u16; 8]; 10],
+
+    // 3D array
+    #[modbus(address = 100)]
+    rgb_cube: [[[u8; 4]; 4]; 3],  // 3×4×4 = 48 elements, 48 registers
+}
+```
+
+**Rules**:
+- ✅ Up to 3 dimensions: `[[[T; Z]; Y]; X]`
+- ✅ Layout is row-major (last index varies fastest)
+- ✅ Total registers = product of all dimensions × registers per element
+
+---
+
+## ❌ TRULY UNSUPPORTED TYPES (Version 1.0)
 
 ### 1. Dynamic-Size Types
 
@@ -243,117 +476,11 @@ Cow<T>           // Clone-on-write
 
 **Why**: Modbus requires knowing exact register count at compile time. These types can grow or shrink.
 
-**Note**: `String` IS supported but requires explicit `length` attribute (see section 6 above)
+**Note**: `String` IS supported but requires explicit `length` attribute (see above)
 
 ---
 
-### 2. Option<T>
-
-**NOT SUPPORTED - Ambiguous representation**:
-
-```rust
-Option<u16>      // How to represent None?
-Option<f32>      // Use 0? NaN? Invalid value?
-```
-
-**Why**: No standard way to represent "None" in Modbus. Different industries use different conventions.
-
-**Workarounds**:
-```rust
-// Option 1: Use separate validity flag
-#[derive(ModbusMapper)]
-struct WithFlag {
-    #[modbus(address = 0)]
-    value: u16,
-
-    #[modbus(address = 1)]
-    value_valid: bool,   // ❌ Can't mix types! Need separate struct
-}
-
-// Option 2: Use special value (manual handling)
-const INVALID: u16 = 0xFFFF;
-
-#[derive(ModbusMapper)]
-struct Sensor {
-    #[modbus(address = 0)]
-    reading: u16,  // 0xFFFF means "not available"
-}
-```
-
-**Future**: Could add `#[modbus(nullable = 0xFFFF)]` attribute in v2.0
-
----
-
-### 3. Enums
-
-**NOT SUPPORTED - Requires encoding rules**:
-
-```rust
-enum State {
-    Idle,
-    Running,
-    Error,
-}
-```
-
-**Why**: Need to define discriminant encoding, size, validation rules.
-
-**Workarounds**:
-```rust
-// Use explicit numeric type + constants
-const STATE_IDLE: u16 = 0;
-const STATE_RUNNING: u16 = 1;
-const STATE_ERROR: u16 = 2;
-
-#[derive(ModbusMapper)]
-struct Machine {
-    #[modbus(address = 0)]
-    state: u16,  // Manually encode enum as integer
-}
-
-// Or use #[repr(u16)] enum + manual conversion (future)
-```
-
-**Future**: Could support `#[repr(u16)]` enums with `#[derive(ModbusEnum)]` in v2.0
-
----
-
-### 4. Nested Structs
-
-**NOT SUPPORTED** (Version 1.0):
-
-```rust
-struct Inner {
-    x: u16,
-    y: u16,
-}
-
-#[derive(ModbusMapper)]
-struct Outer {
-    #[modbus(address = 0)]
-    position: Inner,  // ❌ NOT SUPPORTED
-}
-```
-
-**Why**: Adds complexity to address calculation and layout. Need to decide on flattening strategy.
-
-**Workaround**: Flatten manually
-```rust
-#[derive(ModbusMapper)]
-struct Outer {
-    #[modbus(address = 0)]
-    position_x: u16,
-
-    #[modbus(address = 1)]
-    position_y: u16,
-}
-```
-
-**Future**: Could support with `#[modbus(flatten)]` attribute in v2.0
-
----
-
-### 5. References and Pointers
+### 2. References and Pointers
 
 **NOT SUPPORTED**:
 
@@ -368,7 +495,7 @@ struct Outer {
 
 ---
 
-### 6. Zero-Sized Types
+### 3. Zero-Sized Types
 
 **NOT SUPPORTED**:
 
@@ -378,27 +505,6 @@ PhantomData<T>   // Zero-size marker
 ```
 
 **Why**: Don't map to any registers. Use `#[modbus(skip)]` for non-mapped fields.
-
----
-
-### 7. Tuples
-
-**NOT SUPPORTED**:
-
-```rust
-(u16, u16)       // Tuple
-(f32, bool)      // Mixed tuple
-```
-
-**Why**: Use explicit struct fields instead for clarity.
-
-**Workaround**: Define a proper struct
-```rust
-struct Point {
-    x: u16,
-    y: u16,
-}
-```
 
 ---
 
@@ -471,14 +577,18 @@ struct BooleanFlags {
 
 The macro will enforce these at **compile time**:
 
-1. ✅ All field types are supported primitives, strings, or arrays thereof
+1. ✅ All field types are supported (primitives, strings, arrays, Option, enums, tuples, nested)
 2. ✅ All addresses are specified (no auto-allocation in v1.0)
-3. ✅ No address overlaps between fields
+3. ✅ No address overlaps between fields (except bit fields sharing same register)
 4. ✅ All fields use compatible register types
-5. ✅ Array lengths are compile-time constants
+5. ✅ Array/tuple lengths are compile-time constants
 6. ✅ String fields must have `length` attribute specified
-7. ✅ Endianness only on multi-register types (u32, u64, f32, f64)
-8. ✅ `bool` fields only in coil/discrete structs
+7. ✅ Option<T> fields must have `none_value` or `none_flag` attribute
+8. ✅ Enum fields must have `#[repr(u8/u16/u32/u64)]` attribute
+9. ✅ Nested struct fields must have `flatten` attribute
+10. ✅ Bit field ranges don't overlap within same register
+11. ✅ Endianness only on multi-register types (u32, u64, f32, f64, Option<multi-reg>)
+12. ✅ `bool` fields only in coil/discrete structs OR as bit fields in holding/input
 
 **Example validation errors**:
 ```rust
@@ -499,44 +609,9 @@ struct Invalid {
 
 ## 📈 FUTURE EXTENSIONS (v2.0+)
 
-Types that **could** be supported with more complex implementation:
+Additional features that could be added in future versions:
 
-### 1. Nullable Types
-```rust
-#[modbus(address = 0, nullable = 0xFFFF)]
-optional_value: Option<u16>,
-```
-
-### 2. Enums with #[repr]
-```rust
-#[derive(ModbusEnum)]
-#[repr(u16)]
-enum Mode {
-    Auto = 0,
-    Manual = 1,
-    Off = 2,
-}
-```
-
-### 3. Nested Structs with Flattening
-```rust
-#[derive(ModbusMapper)]
-struct Outer {
-    #[modbus(address = 0, flatten)]
-    inner: Inner,
-}
-```
-
-### 4. Bit Fields
-```rust
-#[modbus(address = 0, bit = 0)]
-flag1: bool,
-
-#[modbus(address = 0, bit = 1)]
-flag2: bool,
-```
-
-### 5. Custom Types via Trait
+### 1. Custom Types via Trait
 ```rust
 trait ModbusSerialize {
     fn to_registers(&self) -> Vec<u16>;
@@ -544,8 +619,199 @@ trait ModbusSerialize {
     fn register_count() -> u16;
 }
 
-// User implements for custom type
+// User implements for custom type (e.g., complex number, UUID, etc.)
 impl ModbusSerialize for MyCustomType { ... }
+```
+
+### 2. Automatic Address Allocation
+```rust
+#[derive(ModbusMapper)]
+#[modbus(auto_allocate)]  // Automatically assign sequential addresses
+struct AutoLayout {
+    temperature: f32,    // Auto-assigned to 0-1
+    pressure: f32,       // Auto-assigned to 2-3
+    status: u16,         // Auto-assigned to 4
+}
+```
+
+### 3. Dynamic String Length Prefix
+```rust
+// First register = length, following registers = data
+#[modbus(address = 0, length = "prefixed", max_length = 32)]
+variable_string: String,
+```
+
+### 4. Computed/Derived Fields
+```rust
+#[modbus(address = 0)]
+celsius: f32,
+
+#[modbus(computed = "celsius * 9.0 / 5.0 + 32.0")]
+fahrenheit: f32,  // Read-only, computed on access
+```
+
+### 5. Conditional Fields
+```rust
+#[modbus(address = 0)]
+mode: OperationMode,
+
+#[modbus(address = 1, when = "mode == OperationMode::Advanced")]
+advanced_param: f32,  // Only serialize when mode is Advanced
+```
+
+### 6. Versioning Support
+```rust
+#[derive(ModbusMapper)]
+#[modbus(version = 2)]
+struct ConfigV2 {
+    #[modbus(since = 1)]
+    old_field: u16,
+
+    #[modbus(since = 2)]
+    new_field: f32,
+}
+```
+
+---
+
+## 🔄 CLIENT AND SERVER SUPPORT
+
+The crate supports both Modbus **client** (master) and **server** (slave) use cases:
+
+### Client Mode (Reading from Modbus Devices)
+
+```rust
+#[derive(ModbusMapper)]
+#[modbus(base_address = 0, register_type = "holding")]
+struct SensorData {
+    #[modbus(address = 0)]
+    temperature: f32,
+
+    #[modbus(address = 2)]
+    pressure: u16,
+}
+
+// Read entire struct from Modbus device
+let data = SensorData::read_from_modbus(&mut ctx).await?;
+
+// Read specific field
+let mut data = SensorData::default();
+data.read_field_from_modbus(&mut ctx, "temperature").await?;
+```
+
+### Server Mode (Responding to Modbus Requests)
+
+```rust
+#[derive(ModbusMapper, Default)]
+#[modbus(base_address = 0, register_type = "holding")]
+struct DeviceState {
+    #[modbus(address = 0)]
+    setpoint: f32,
+
+    #[modbus(address = 2, readonly)]
+    current_value: f32,
+
+    #[modbus(address = 4)]
+    mode: OperationMode,
+}
+
+// Serve requests
+let mut state = DeviceState::default();
+
+// Handle read request from client
+let response_registers = state.to_registers();
+
+// Handle write request from client
+state.update_from_registers(&incoming_registers)?;
+
+// Or update specific field from write request
+state.update_field_from_registers("setpoint", &incoming_registers)?;
+```
+
+### Server-Specific Attributes
+
+```rust
+#[derive(ModbusMapper)]
+struct ServerConfig {
+    // Read-only field - reject writes
+    #[modbus(address = 0, readonly)]
+    firmware_version: u16,
+
+    // Write-only field - reads return 0
+    #[modbus(address = 1, writeonly)]
+    command: u16,
+
+    // Validation on write
+    #[modbus(address = 2, validate = "0..=100")]
+    percentage: u8,
+
+    // Custom validator function
+    #[modbus(address = 3, validate_with = "validate_temperature")]
+    temperature: i16,
+}
+
+fn validate_temperature(value: &i16) -> Result<(), String> {
+    if *value < -40 || *value > 125 {
+        Err(format!("Temperature {} out of range [-40, 125]", value))
+    } else {
+        Ok(())
+    }
+}
+```
+
+### Change Notifications (Server)
+
+```rust
+use modbus_mapper::ChangeCallback;
+
+#[derive(ModbusMapper)]
+#[modbus(on_change = "handle_change")]
+struct MonitoredData {
+    #[modbus(address = 0, on_change = "handle_setpoint_change")]
+    setpoint: f32,
+
+    #[modbus(address = 2)]
+    value: f32,
+}
+
+fn handle_setpoint_change(old: &f32, new: &f32) {
+    println!("Setpoint changed: {} → {}", old, new);
+}
+
+fn handle_change(field: &str, data: &MonitoredData) {
+    println!("Field '{}' changed", field);
+}
+```
+
+### Thread Safety (Server)
+
+For multi-threaded servers, use `Arc<Mutex<T>>` or `Arc<RwLock<T>>`:
+
+```rust
+use std::sync::{Arc, RwLock};
+
+#[derive(ModbusMapper, Default)]
+struct SharedState {
+    #[modbus(address = 0)]
+    value: u16,
+}
+
+// In server:
+let state = Arc::new(RwLock::new(SharedState::default()));
+
+// Read handler
+let state_clone = state.clone();
+let read_handler = move |addr, count| {
+    let guard = state_clone.read().unwrap();
+    guard.read_registers(addr, count)
+};
+
+// Write handler
+let state_clone = state.clone();
+let write_handler = move |addr, values| {
+    let mut guard = state_clone.write().unwrap();
+    guard.write_registers(addr, values)
+};
 ```
 
 ---
@@ -553,22 +819,32 @@ impl ModbusSerialize for MyCustomType { ... }
 ## 📝 SUMMARY
 
 ### ✅ Supported (v1.0)
-- All primitive integers: `u8, u16, u32, u64, i8, i16, i32, i64`
-- Floating point: `f32, f64`
-- Boolean: `bool` (in dedicated coil/discrete structs)
-- Fixed-length strings: `String` (with required `length` attribute)
-- Fixed-size arrays: `[T; N]` where T is any supported primitive
+- **Primitive integers**: `u8, u16, u32, u64, i8, i16, i32, i64`
+- **Floating point**: `f32, f64` (with configurable endianness)
+- **Boolean**: `bool` (in dedicated coil/discrete structs, or as bit fields)
+- **Fixed-length strings**: `String` (with required `length` attribute)
+- **Fixed-size arrays**: `[T; N]` where T is any supported type
+- **Multi-dimensional arrays**: Up to 3D arrays `[[[T; Z]; Y]; X]`
+- **Option<T>**: Nullable types with sentinel values or separate validity flags
+- **Enums**: `#[repr(u8/u16/u32/u64)]` enums with explicit discriminants
+- **Bit fields**: Pack multiple `bool` or small integers into single registers
+- **Nested structs**: Flattening with `#[modbus(flatten)]` attribute
+- **Tuples**: Up to 8-element tuples of supported types
 
-### ❌ Unsupported (v1.0)
-- Dynamic types: `Vec<T>, Box<T>, Rc<T>, Arc<T>`
-- Nullable types: `Option<T>`
-- Enums: `enum { ... }`
-- Nested structs
-- References: `&T, &mut T`
-- Zero-sized types: `(), PhantomData<T>`
-- Tuples: `(T, U)`
+### ❌ Truly Unsupported (v1.0)
+- **Dynamic types**: `Vec<T>, Box<T>, Rc<T>, Arc<T>, Cow<T>` (runtime-sized)
+- **References**: `&T, &mut T, *const T, *mut T` (don't own data)
+- **Zero-sized types**: `(), PhantomData<T>` (don't map to registers)
 
 ### 🎯 Design Philosophy
-**"If it doesn't have a compile-time known size and deterministic layout, it's not supported."**
+**"If it has a compile-time known size and deterministic layout, it's supported."**
 
-This keeps the implementation simple, predictable, and type-safe while covering 95% of industrial Modbus use cases.
+This comprehensive type support covers **99%+ of industrial Modbus use cases** including:
+- ✅ Simple sensor readings (primitives)
+- ✅ Complex multi-field devices (structs with many types)
+- ✅ Optional values (Option<T> with configurable None representation)
+- ✅ State machines (enums)
+- ✅ Status flags (bit fields)
+- ✅ Device metadata (strings)
+- ✅ Array data (sensor arrays, image data, etc.)
+- ✅ Structured data (nested structs, tuples)
