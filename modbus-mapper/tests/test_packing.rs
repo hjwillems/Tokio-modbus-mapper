@@ -1,6 +1,6 @@
 //! Integration tests for bit-packing and byte-packing functionality.
 
-use modbus_mapper::{ModbusMapper, ToRegisters, FromRegisters, ModbusMetadata};
+use modbus_mapper::{FromRegisters, ModbusMapper, ModbusMetadata, ToRegisters};
 
 // =============================================================================
 // Bit Packing Tests
@@ -334,9 +334,9 @@ fn test_full_16bit_packing() {
     assert_eq!(registers[0], 0x5555);
 
     let decoded = FullBitPacking::from_registers(&registers).expect("Failed to decode");
-    assert_eq!(decoded.bit0, true);
-    assert_eq!(decoded.bit1, false);
-    assert_eq!(decoded.bit15, false);
+    assert!(decoded.bit0);
+    assert!(!decoded.bit1);
+    assert!(!decoded.bit15);
 }
 
 // =============================================================================
@@ -358,7 +358,7 @@ fn test_single_bit_field() {
     assert_eq!(registers[0], 0x0020); // Bit 5 set
 
     let decoded = SingleBit::from_registers(&registers).expect("Failed to decode");
-    assert_eq!(decoded.flag, true);
+    assert!(decoded.flag);
 }
 
 #[test]

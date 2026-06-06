@@ -22,12 +22,18 @@ tokio-modbus.workspace = true
 # Async runtime (minimal features, re-exported from tokio-modbus)
 tokio = { workspace = true, features = ["rt"] }
 
+# Async trait support for the client extension traits.
+# Already present transitively via tokio-modbus, so this adds no extra build cost.
+async-trait.workspace = true
+
 # Lightweight error handling
 thiserror.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
 tokio-test = "0.4"
+# Compile-fail tests for the derive macro's validation rules.
+trybuild = "1.0"
 
 [features]
 default = []

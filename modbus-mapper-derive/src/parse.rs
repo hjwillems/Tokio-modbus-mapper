@@ -1,7 +1,6 @@
 //! Attribute parsing for ModbusMapper derive macro.
 
 use darling::{ast, FromDeriveInput, FromField};
-use quote;
 use syn::{Ident, Type};
 
 /// Struct-level attributes for `#[modbus(...)]`.
@@ -56,14 +55,6 @@ pub struct ModbusFieldOpts {
     /// Skip this field in Modbus mapping.
     #[darling(default)]
     pub skip: bool,
-
-    /// Read-only field (server mode).
-    #[darling(default)]
-    pub readonly: bool,
-
-    /// Write-only field (server mode).
-    #[darling(default)]
-    pub writeonly: bool,
 }
 
 impl ModbusMapperOpts {
@@ -89,10 +80,7 @@ impl ModbusMapperOpts {
     /// Get all non-skipped fields.
     pub fn fields(&self) -> Vec<&ModbusFieldOpts> {
         match &self.data {
-            ast::Data::Struct(fields) => fields
-                .iter()
-                .filter(|f| !f.skip)
-                .collect(),
+            ast::Data::Struct(fields) => fields.iter().filter(|f| !f.skip).collect(),
             _ => vec![],
         }
     }
@@ -115,17 +103,32 @@ impl ModbusFieldOpts {
 
 /// Validate struct-level attributes.
 pub fn validate_struct_attrs(opts: &ModbusMapperOpts) -> Result<(), darling::Error> {
-    // Validate register type
+    // Validate register type.
+    //
+    // Only the 16-bit register types are supported today. `coil`/`discrete` are
+    // bit-addressed on the wire and cannot be represented by the `Vec<u16>` model
+    // this crate currently generates, so they are rejected here rather than
+    // silently producing an incorrect mapping. Use bit-packing into a `holding`
+    // register block to model boolean flags.
     let register_type = opts.get_register_type();
-    if !matches!(
-        register_type.as_str(),
-        "holding" | "input" | "coil" | "discrete"
-    ) {
-        return Err(darling::Error::custom(format!(
-            "Invalid register_type '{}'. Must be 'holding', 'input', 'coil', or 'discrete'",
-            register_type
-        ))
-        .with_span(&opts.ident));
+    match register_type.as_str() {
+        "holding" | "input" => {}
+        "coil" | "discrete" => {
+            return Err(darling::Error::custom(format!(
+                "register_type '{}' is not supported yet: the Vec<u16> register model \
+                 cannot represent bit-addressed coils. Use register_type = \"holding\" \
+                 with bit-packed bool fields (#[modbus(address = N, bit = B)]) instead.",
+                register_type
+            ))
+            .with_span(&opts.ident));
+        }
+        other => {
+            return Err(darling::Error::custom(format!(
+                "Invalid register_type '{}'. Must be 'holding' or 'input'",
+                other
+            ))
+            .with_span(&opts.ident));
+        }
     }
 
     // Validate default endianness
@@ -170,15 +173,6 @@ pub fn validate_field_attrs(
             ))
             .with_span(field.ident.as_ref().unwrap()));
         }
-    }
-
-    // Validate readonly/writeonly combination
-    if field.readonly && field.writeonly {
-        return Err(darling::Error::custom(format!(
-            "Field '{}' cannot be both 'readonly' and 'writeonly'",
-            field.name()
-        ))
-        .with_span(field.ident.as_ref().unwrap()));
     }
 
     // Validate bit position

@@ -1,0 +1,5 @@
+error: register_type 'coil' is not supported yet: the Vec<u16> register model cannot represent bit-addressed coils. Use register_type = "holding" with bit-packed bool fields (#[modbus(address = N, bit = B)]) instead.
+ --> tests/ui/coil_unsupported.rs:8:8
+  |
+8 | struct Coils {
+  |        ^^^^^
