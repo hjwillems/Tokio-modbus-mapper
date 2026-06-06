@@ -1,5 +1,12 @@
 # Tokio Modbus Mapper - Implementation Plan
 
+> **Status note:** This is the original forward-looking roadmap. It describes the intended
+> end state, **not** what is implemented today. For the authoritative list of what actually
+> works right now, see [`TYPE_SPEC.md`](TYPE_SPEC.md) and the "Current Status" section of
+> [`README.md`](README.md). As of v0.1, only numeric primitives, `bool`, bit/byte packing,
+> per-field endianness, contiguous-layout validation, and async I/O for `holding`/`input`
+> are implemented.
+
 ## 1. Project Overview
 
 A Rust procedural macro crate that automatically maps Rust struct fields to Modbus registers with **comprehensive type support** for both **client and server** use cases:

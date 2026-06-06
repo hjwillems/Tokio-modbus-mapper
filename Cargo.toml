@@ -22,6 +22,7 @@ categories = ["network-programming", "embedded", "asynchronous"]
 tokio-modbus = "0.14"
 tokio = { version = "1", default-features = false }
 thiserror = "1"
+async-trait = "0.1"
 
 # Proc macro dependencies
 syn = { version = "2", features = ["full", "extra-traits"] }

@@ -15,6 +15,27 @@ use crate::parse::{validate_field_attrs, validate_struct_attrs, ModbusMapperOpts
 
 /// Derive macro for mapping Rust structs to Modbus registers.
 ///
+/// Generates [`ToRegisters`], [`FromRegisters`], and [`ModbusMetadata`] implementations
+/// at compile time.
+///
+/// # Struct-level attributes
+///
+/// - `base_address = N` — absolute Modbus address of the block on the wire, used by the
+///   async I/O layer (default: 0)
+/// - `register_type = "TYPE"` — `"holding"` or `"input"` (default: `"holding"`).
+///   `"coil"`/`"discrete"` are not supported yet.
+/// - `default_endian = "ENDIAN"` — default word order: `"big"` or `"little"` (default: `"big"`)
+///
+/// # Field-level attributes
+///
+/// - `address = N` — offset of this field within the block (required unless `skip`).
+///   Addresses must form a gap-free, contiguous layout starting at 0; this is checked
+///   at compile time.
+/// - `endian = "ENDIAN"` — override word order for this field: `"big"` or `"little"`
+/// - `bit = B` — pack a `bool` into bit `B` (0-15) of the register at `address`
+/// - `offset = "high" | "low"` — pack a `u8`/`i8` into the high/low byte of `address`
+/// - `skip` — exclude this field from the Modbus mapping
+///
 /// # Example
 ///
 /// ```ignore
@@ -29,22 +50,6 @@ use crate::parse::{validate_field_attrs, validate_struct_attrs, ModbusMapperOpts
 ///     #[modbus(address = 2)]
 ///     pressure: u16,
 /// }
-///
-/// # Attributes
-///
-/// ## Struct-level attributes
-///
-/// - `base_address = N` - Base address for all fields (default: 0)
-/// - `register_type = "TYPE"` - Register type: "holding", "input", "coil", or "discrete" (default: "holding")
-/// - `default_endian = "ENDIAN"` - Default endianness: "big" or "little" (default: "big")
-///
-/// ## Field-level attributes
-///
-/// - `address = N` - Register address for this field (required unless `skip`)
-/// - `endian = "ENDIAN"` - Endianness for this field: "big" or "little"
-/// - `skip` - Skip this field in Modbus mapping
-/// - `readonly` - Field is read-only (server mode)
-/// - `writeonly` - Field is write-only (server mode)
 /// ```
 #[proc_macro_derive(ModbusMapper, attributes(modbus))]
 pub fn derive_modbus_mapper(input: TokenStream) -> TokenStream {
@@ -77,38 +82,21 @@ pub fn derive_modbus_mapper(input: TokenStream) -> TokenStream {
 
 /// Derive macro for mapping Rust enums to Modbus register values.
 ///
-/// The enum must have a `#[repr(u8/u16/u32/u64)]` attribute.
-///
-/// # Example
-///
-/// ```ignore
-/// use modbus_mapper::ModbusEnum;
-///
-/// #[derive(ModbusEnum)]
-/// #[repr(u16)]
-/// enum OperationMode {
-///     Idle = 0,
-///     Running = 1,
-///     Error = 2,
-/// }
-/// ```
+/// **Not implemented yet.** Deriving `ModbusEnum` is currently a compile error so it
+/// fails loudly rather than appearing to work. Enum support (with `#[repr(...)]`
+/// discriminant validation) is tracked in `TYPE_SPEC.md` under "Not implemented yet".
 #[proc_macro_derive(ModbusEnum, attributes(modbus))]
 pub fn derive_modbus_enum(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
-    let name = &input.ident;
+    // Reserve the name and the attribute, but reject use until it is real.
+    let _ = parse_macro_input!(input as DeriveInput);
 
-    // TODO: Implement actual macro logic in Phase 6
-    // For now, just generate a basic stub to test compilation
-
-    let expanded = quote! {
-        // Placeholder implementation
-        impl #name {
-            /// Placeholder method
-            pub fn _placeholder() {
-                unimplemented!("ModbusEnum derive macro not yet implemented")
-            }
-        }
+    let error = quote! {
+        compile_error!(
+            "#[derive(ModbusEnum)] is not implemented yet. Map the enum's underlying \
+             integer type directly for now (e.g. a `u16` field) and convert manually. \
+             See TYPE_SPEC.md for status."
+        );
     };
 
-    TokenStream::from(expanded)
+    TokenStream::from(error)
 }

@@ -28,6 +28,16 @@ enum FieldMapping {
     },
 }
 
+impl FieldMapping {
+    /// The underlying parsed field options, regardless of mapping kind.
+    fn field(&self) -> &ModbusFieldOpts {
+        match self {
+            FieldMapping::Normal { field, .. }
+            | FieldMapping::BitPacked { field, .. }
+            | FieldMapping::BytePacked { field, .. } => field,
+        }
+    }
+}
 
 /// A group of fields that share the same register address.
 #[derive(Debug)]
@@ -39,6 +49,20 @@ struct RegisterGroup {
 /// Generate the complete implementation for a ModbusMapper struct.
 pub fn generate_modbus_mapper_impl(opts: &ModbusMapperOpts) -> TokenStream {
     let fields = opts.fields();
+
+    // Validate the register layout once, up front, so a single clear compile
+    // error is emitted instead of cascading errors from the generated impls.
+    let default_endian = opts.get_default_endian();
+    let groups = group_fields_by_address(&fields, &default_endian);
+
+    for group in &groups {
+        if let Err(err) = validate_register_group(group) {
+            return quote! { compile_error!(#err); };
+        }
+    }
+    if let Err(err) = validate_contiguous_layout(&groups) {
+        return quote! { compile_error!(#err); };
+    }
 
     let to_registers_impl = generate_to_registers(&fields, opts);
     let from_registers_impl = generate_from_registers(&fields, opts);
@@ -87,7 +111,7 @@ fn group_fields_by_address(
             }
         };
 
-        groups.entry(address).or_insert_with(Vec::new).push(mapping);
+        groups.entry(address).or_default().push(mapping);
     }
 
     // Convert BTreeMap to sorted Vec of RegisterGroups
@@ -104,9 +128,18 @@ fn validate_register_group(group: &RegisterGroup) -> Result<(), String> {
     }
 
     // Check if we have any normal fields
-    let has_normal = group.fields.iter().any(|f| matches!(f, FieldMapping::Normal { .. }));
-    let has_bit_packed = group.fields.iter().any(|f| matches!(f, FieldMapping::BitPacked { .. }));
-    let has_byte_packed = group.fields.iter().any(|f| matches!(f, FieldMapping::BytePacked { .. }));
+    let has_normal = group
+        .fields
+        .iter()
+        .any(|f| matches!(f, FieldMapping::Normal { .. }));
+    let has_bit_packed = group
+        .fields
+        .iter()
+        .any(|f| matches!(f, FieldMapping::BitPacked { .. }));
+    let has_byte_packed = group
+        .fields
+        .iter()
+        .any(|f| matches!(f, FieldMapping::BytePacked { .. }));
 
     // Normal fields cannot share a register with packed fields
     if has_normal && (has_bit_packed || has_byte_packed) {
@@ -183,20 +216,11 @@ fn generate_to_registers(fields: &[&ModbusFieldOpts], opts: &ModbusMapperOpts) -
     let struct_name = &opts.ident;
     let default_endian = opts.get_default_endian();
 
+    // Layout and per-group validation already happened in
+    // `generate_modbus_mapper_impl`; by this point the grouping is known-valid.
     let groups = group_fields_by_address(fields, &default_endian);
 
-    // Validate all groups
-    for group in &groups {
-        if let Err(err) = validate_register_group(group) {
-            return quote! {
-                compile_error!(#err);
-            };
-        }
-    }
-
-    let register_conversions = groups.iter().map(|group| {
-        generate_register_group_to_registers(group)
-    });
+    let register_conversions = groups.iter().map(generate_register_group_to_registers);
 
     let total_register_count = calculate_total_register_count_from_groups(&groups);
 
@@ -244,7 +268,13 @@ fn generate_register_group_to_registers(group: &RegisterGroup) -> TokenStream {
 
 /// Generate code for a normal field.
 fn generate_normal_field_to_registers(mapping: &FieldMapping) -> TokenStream {
-    let FieldMapping::Normal { field, endian, type_str, .. } = mapping else {
+    let FieldMapping::Normal {
+        field,
+        endian,
+        type_str,
+        ..
+    } = mapping
+    else {
         return quote! {};
     };
 
@@ -324,7 +354,11 @@ fn generate_normal_field_to_registers(mapping: &FieldMapping) -> TokenStream {
 /// Generate code to pack multiple bit fields into one register.
 fn generate_bit_packed_to_register(fields: &[FieldMapping]) -> TokenStream {
     let bit_sets = fields.iter().map(|mapping| {
-        if let FieldMapping::BitPacked { field, bit_position } = mapping {
+        if let FieldMapping::BitPacked {
+            field,
+            bit_position,
+        } = mapping
+        {
             let field_name = field.ident.as_ref().unwrap();
             quote! {
                 if self.#field_name {
@@ -348,7 +382,11 @@ fn generate_bit_packed_to_register(fields: &[FieldMapping]) -> TokenStream {
 /// Generate code to pack byte fields into one register.
 fn generate_byte_packed_to_register(fields: &[FieldMapping]) -> TokenStream {
     let byte_packs = fields.iter().map(|mapping| {
-        if let FieldMapping::BytePacked { field, is_high_byte } = mapping {
+        if let FieldMapping::BytePacked {
+            field,
+            is_high_byte,
+        } = mapping
+        {
             let field_name = field.ident.as_ref().unwrap();
             if *is_high_byte {
                 quote! {
@@ -386,18 +424,7 @@ fn generate_from_registers(fields: &[&ModbusFieldOpts], opts: &ModbusMapperOpts)
 
     for group in &groups {
         address_to_index.insert(group.address, current_index);
-
-        // Determine how many registers this group consumes
-        let register_count = if group.fields.is_empty() {
-            0
-        } else {
-            match &group.fields[0] {
-                FieldMapping::Normal { register_count, .. } => *register_count as usize,
-                FieldMapping::BitPacked { .. } | FieldMapping::BytePacked { .. } => 1,
-            }
-        };
-
-        current_index += register_count;
+        current_index += group_register_width(group) as usize;
     }
 
     // Generate field deserializations
@@ -409,9 +436,11 @@ fn generate_from_registers(fields: &[&ModbusFieldOpts], opts: &ModbusMapperOpts)
     quote! {
         impl ::modbus_mapper::FromRegisters for #struct_name {
             fn from_registers(registers: &[u16]) -> ::modbus_mapper::Result<Self> {
-                if registers.len() != Self::register_count() as usize {
+                // Fully-qualified so users don't need `ToRegisters` in scope to derive.
+                let expected = <Self as ::modbus_mapper::ToRegisters>::register_count() as usize;
+                if registers.len() != expected {
                     return Err(::modbus_mapper::ModbusMapperError::RegisterCountMismatch {
-                        expected: Self::register_count() as usize,
+                        expected,
                         actual: registers.len(),
                     });
                 }
@@ -438,7 +467,11 @@ fn generate_register_group_from_registers(group: &RegisterGroup, index: usize) -
         }
         FieldMapping::BitPacked { .. } => {
             let extractions = group.fields.iter().map(|mapping| {
-                if let FieldMapping::BitPacked { field, bit_position } = mapping {
+                if let FieldMapping::BitPacked {
+                    field,
+                    bit_position,
+                } = mapping
+                {
                     let field_name = field.ident.as_ref().unwrap();
                     quote! {
                         #field_name: (registers[#index] & (1u16 << #bit_position)) != 0,
@@ -451,7 +484,11 @@ fn generate_register_group_from_registers(group: &RegisterGroup, index: usize) -
         }
         FieldMapping::BytePacked { .. } => {
             let extractions = group.fields.iter().map(|mapping| {
-                if let FieldMapping::BytePacked { field, is_high_byte } = mapping {
+                if let FieldMapping::BytePacked {
+                    field,
+                    is_high_byte,
+                } = mapping
+                {
                     let field_name = field.ident.as_ref().unwrap();
                     let type_str = type_to_string(&field.ty);
                     let cast_type = if type_str == "i8" {
@@ -480,7 +517,13 @@ fn generate_register_group_from_registers(group: &RegisterGroup, index: usize) -
 
 /// Generate code to deserialize a normal field.
 fn generate_normal_field_from_registers(mapping: &FieldMapping, index: usize) -> TokenStream {
-    let FieldMapping::Normal { field, endian, type_str, .. } = mapping else {
+    let FieldMapping::Normal {
+        field,
+        endian,
+        type_str,
+        ..
+    } = mapping
+    else {
         return quote! {};
     };
 
@@ -642,21 +685,55 @@ fn generate_metadata(fields: &[&ModbusFieldOpts], opts: &ModbusMapperOpts) -> To
     }
 }
 
+/// Number of registers a single register group occupies.
+///
+/// A normal field occupies its type width; packed fields share a single register.
+fn group_register_width(group: &RegisterGroup) -> u16 {
+    match group.fields.first() {
+        None => 0,
+        Some(FieldMapping::Normal { register_count, .. }) => *register_count,
+        Some(FieldMapping::BitPacked { .. }) | Some(FieldMapping::BytePacked { .. }) => 1,
+    }
+}
+
 /// Calculate the total register count from register groups.
 fn calculate_total_register_count_from_groups(groups: &[RegisterGroup]) -> u16 {
-    groups
-        .iter()
-        .map(|group| {
-            if group.fields.is_empty() {
-                0
-            } else {
-                match &group.fields[0] {
-                    FieldMapping::Normal { register_count, .. } => *register_count,
-                    FieldMapping::BitPacked { .. } | FieldMapping::BytePacked { .. } => 1,
-                }
-            }
-        })
-        .sum()
+    groups.iter().map(group_register_width).sum()
+}
+
+/// Validate that the declared field addresses form a contiguous register block
+/// starting at offset 0.
+///
+/// Field `address` is an offset within the struct's register block, not a free
+/// label: the generated `to_registers`/`from_registers` lay the registers out
+/// contiguously, so the declared addresses must match that layout exactly. A gap
+/// or overlap means the struct would not line up with the device it claims to map,
+/// so it is rejected at compile time instead of silently producing a wrong buffer.
+fn validate_contiguous_layout(groups: &[RegisterGroup]) -> Result<(), String> {
+    let mut expected_offset: u16 = 0;
+
+    for group in groups {
+        if group.address != expected_offset {
+            let names: Vec<String> = group
+                .fields
+                .iter()
+                .map(|f| f.field().ident.as_ref().unwrap().to_string())
+                .collect();
+
+            return Err(format!(
+                "field(s) {:?} declare address {}, but the contiguous layout expects address {}. \
+                 Field addresses are offsets within the struct's register block and must be \
+                 gap-free and start at 0 (packed fields share one address). Either renumber the \
+                 addresses to be contiguous, or split the struct so each block maps a contiguous \
+                 region of the device.",
+                names, group.address, expected_offset
+            ));
+        }
+
+        expected_offset += group_register_width(group);
+    }
+
+    Ok(())
 }
 
 /// Get the number of registers required for a type.
@@ -672,9 +749,7 @@ fn get_type_register_count(type_str: &str) -> u16 {
 /// Convert a Type to a string representation.
 fn type_to_string(ty: &Type) -> String {
     match ty {
-        Type::Path(TypePath { path, .. }) => {
-            path.segments.last().unwrap().ident.to_string()
-        }
+        Type::Path(TypePath { path, .. }) => path.segments.last().unwrap().ident.to_string(),
         _ => String::new(),
     }
 }

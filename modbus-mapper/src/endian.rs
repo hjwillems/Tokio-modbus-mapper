@@ -4,23 +4,18 @@
 //! For multi-register types (u32, u64, f32, f64), the word order can be configured.
 
 /// Endianness configuration for multi-register types.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Endianness {
     /// Big-endian word order (most significant word first).
     /// For f32: [MSW, LSW]
     /// For f64: [W3, W2, W1, W0]
+    #[default]
     Big,
 
     /// Little-endian word order (least significant word first).
     /// For f32: [LSW, MSW]
     /// For f64: [W0, W1, W2, W3]
     Little,
-}
-
-impl Default for Endianness {
-    fn default() -> Self {
-        Self::Big
-    }
 }
 
 /// Convert u32 to two u16 registers with specified word order.
@@ -40,7 +35,7 @@ pub fn u32_to_registers(value: u32, endian: Endianness) -> [u16; 2] {
 #[inline]
 pub fn u32_from_registers(registers: &[u16], endian: Endianness) -> u32 {
     let (high, low) = match endian {
-        Endianness::Big => (registers[0], registers[1]),    // MSW first
+        Endianness::Big => (registers[0], registers[1]), // MSW first
         Endianness::Little => (registers[1], registers[0]), // LSW first
     };
 

@@ -213,11 +213,13 @@ dependencies = [
 name = "modbus-mapper"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "modbus-mapper-derive",
  "thiserror",
  "tokio",
  "tokio-modbus",
  "tokio-test",
+ "trybuild",
 ]
 
 [[package]]

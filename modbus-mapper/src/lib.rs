@@ -1,22 +1,28 @@
 //! # Modbus Mapper
 //!
-//! A zero-cost procedural macro crate for mapping Rust types to Modbus registers.
+//! A zero-cost procedural macro crate for mapping Rust structs to Modbus registers.
 //!
-//! This crate provides a thin, lightweight layer on top of `tokio-modbus` that automatically
-//! generates type-safe serialization and deserialization code for Modbus register mappings.
+//! This crate is a thin layer on top of `tokio-modbus`: the `#[derive(ModbusMapper)]`
+//! macro generates the register serialization/deserialization at compile time, and a
+//! small async layer connects it to `tokio-modbus` I/O.
 //!
-//! ## Features
+//! ## Implemented today
 //!
-//! - **Comprehensive type support**: primitives, strings, arrays, Option, enums, bit fields, nested structs, tuples
-//! - **Zero runtime overhead**: All code generated at compile time
-//! - **Client and server modes**: Read/write from devices or respond to requests
-//! - **Configurable endianness**: Per-field big/little-endian word order
-//! - **Compile-time validation**: Catch mapping errors before running
+//! - **Primitive types**: `bool`, `u8`/`i8`, `u16`/`i16`, `u32`/`i32`, `u64`/`i64`, `f32`, `f64`
+//! - **Bit packing**: up to 16 `bool` fields packed into one register
+//! - **Byte packing**: two `u8`/`i8` fields packed into the high/low byte of one register
+//! - **Configurable endianness**: per-field big/little-endian word order for multi-register types
+//! - **Contiguous-layout validation**: field addresses are checked at compile time
+//! - **Async client I/O**: [`ModbusRead`]/[`ModbusWrite`] for `holding`/`input` register blocks
+//!
+//! Not implemented yet (see `TYPE_SPEC.md`): `String`, `Option<T>`, enums, arrays, tuples,
+//! nested structs, `coil`/`discrete` register types, and server mode.
 //!
 //! ## Example
 //!
-//! ```ignore
-//! use modbus_mapper::ModbusMapper;
+//! ```no_run
+//! use modbus_mapper::{ModbusMapper, ModbusRead};
+//! use tokio_modbus::prelude::*;
 //!
 //! #[derive(ModbusMapper)]
 //! #[modbus(base_address = 0, register_type = "holding")]
@@ -31,16 +37,14 @@
 //!     status_flags: u16,
 //! }
 //!
-//! #[tokio::main]
-//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     let mut ctx = tokio_modbus::client::tcp::connect("192.168.1.100:502").await?;
+//! # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+//! let mut ctx = tcp::connect("192.168.1.100:502".parse().unwrap()).await?;
 //!
-//!     // Read entire struct from Modbus device
-//!     let data = SensorData::read_from_modbus(&mut ctx).await?;
-//!     println!("Temperature: {}", data.temperature);
-//!
-//!     Ok(())
-//! }
+//! // Read entire struct from Modbus device in one request.
+//! let data = SensorData::read_from_modbus(&mut ctx).await?;
+//! println!("Temperature: {}", data.temperature);
+//! # Ok(())
+//! # }
 //! ```
 
 #![warn(missing_docs)]
@@ -53,10 +57,12 @@ pub use modbus_mapper_derive::{ModbusEnum, ModbusMapper};
 pub use tokio_modbus;
 
 // Public modules
+pub mod client;
 pub mod endian;
 pub mod error;
 
 // Re-export commonly used types
+pub use client::{ModbusRead, ModbusWrite};
 pub use endian::Endianness;
 pub use error::{ModbusMapperError, Result};
 

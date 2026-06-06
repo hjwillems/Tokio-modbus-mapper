@@ -24,18 +24,19 @@ struct SensorData {
     pressure: u16,         // Register 2
 }
 
-let registers = client.read_holding_registers(0, 3).await?;
-let data = SensorData::from_registers(&registers)?;
+// One request, decoded straight into the struct:
+let data = SensorData::read_from_modbus(&mut client).await?;
 ```
 
 ## Core Features
 
-- **Zero runtime overhead** - All code generated at compile time
+- **Zero runtime overhead** - Serialization code generated at compile time
 - **Type-safe** - Catch mapping errors at compile time
 - **Minimal** - Thin layer on tokio-modbus
+- **Async I/O** - `read_from_modbus` / `write_to_modbus` for whole-struct transfers
 - **Efficient packing** - Bit packing (16 bools/register), byte packing (2×u8/register)
-- **Flexible** - Per-field endianness, multiple register types, custom addresses
-- **Complete Modbus support** - All 19 standard function codes
+- **Validated layout** - Field addresses are checked for contiguity at compile time
+- **Per-field endianness** - Big/little word order, overridable per field
 
 ## Quick Start
 
@@ -70,6 +71,29 @@ let registers = data.to_registers();  // Vec<u16>
 // Deserialize from registers
 let decoded = SensorData::from_registers(&registers)?;
 ```
+
+### Async I/O with tokio-modbus
+
+The `ModbusRead`/`ModbusWrite` extension traits connect the generated mapping to a
+live `tokio-modbus` connection. The whole struct is read or written in a single
+request at the struct's `base_address`, using the function code implied by its
+`register_type`:
+
+```rust
+use modbus_mapper::{ModbusMapper, ModbusRead, ModbusWrite};
+use tokio_modbus::prelude::*;
+
+let mut ctx = tcp::connect("192.168.1.100:502".parse().unwrap()).await?;
+
+// Read Holding Registers (0x03) at base_address, decode into the struct.
+let data = SensorData::read_from_modbus(&mut ctx).await?;
+
+// Encode and Write Multiple Registers (0x10) at base_address.
+data.write_to_modbus(&mut ctx).await?;
+```
+
+- `holding` → reads with `0x03`, writes with `0x10`.
+- `input` → reads with `0x04`; writes return `UnsupportedRegisterType` (read-only).
 
 ## Advanced Features
 
@@ -185,8 +209,8 @@ struct ControllerState {
 
 ```rust
 #[modbus(
-    base_address = 0,              // Base address (default: 0)
-    register_type = "holding",     // "holding", "input", "coil", "discrete"
+    base_address = 0,              // Absolute wire address of the block, used by I/O (default: 0)
+    register_type = "holding",     // "holding" or "input" (default: "holding")
     default_endian = "big"         // "big" or "little" (default: "big")
 )]
 ```
@@ -195,13 +219,18 @@ struct ControllerState {
 
 ```rust
 #[modbus(
-    address = 0,                   // Register address (required)
+    address = 0,                   // Offset within the block; must be contiguous from 0
     endian = "big",                // Override endianness
     bit = 0,                       // Bit position (0-15) for bool
     offset = "high",               // Byte offset ("high"/"low") for u8/i8
     skip                           // Exclude from mapping
 )]
 ```
+
+> **Addressing:** `address` is an *offset within the struct's block*, not a free label.
+> The generated buffer is contiguous, so addresses must be gap-free and start at 0
+> (packed fields share one address). Gaps/overlaps are a compile error — model a device
+> with reserved gaps by splitting it into multiple structs.
 
 ## Generated Traits
 
@@ -317,21 +346,23 @@ impl ToRegisters for Data {
 Compile-time checks prevent common errors:
 
 ```rust
-// ❌ Compile error: bit position out of range
-#[modbus(address = 0, bit = 16)]  // Max is 15
-invalid_bit: bool,
+// ❌ Compile error: non-contiguous layout (gap between 0 and 5)
+#[modbus(address = 0)] a: u16,
+#[modbus(address = 5)] b: u16,
+
+// ❌ Compile error: bit position out of range (max is 15)
+#[modbus(address = 0, bit = 16)] invalid_bit: bool,
 
 // ❌ Compile error: bit attribute on non-bool
-#[modbus(address = 0, bit = 0)]
-not_bool: u8,
+#[modbus(address = 0, bit = 0)] not_bool: u8,
 
 // ❌ Compile error: offset attribute on wrong type
-#[modbus(address = 0, offset = "high")]
-not_byte: u16,
+#[modbus(address = 0, offset = "high")] not_byte: u16,
 
-// ❌ Compile error: both bit and offset
-#[modbus(address = 0, bit = 0, offset = "high")]
-conflicting: bool,
+// ❌ Compile error: both bit and offset on one field
+#[modbus(address = 0, bit = 0, offset = "high")] conflicting: bool,
+
+// ❌ Compile error: register_type = "coil" / "discrete" not supported yet
 ```
 
 Runtime validation:
@@ -344,45 +375,37 @@ let result = Data::from_registers(&wrong_size);
 
 ## Design Principles
 
-1. **Zero-cost abstraction** - No runtime overhead
+1. **Zero-cost serialization** - Generated code matches hand-written
 2. **Type safety first** - Catch errors at compile time
 3. **Minimal dependencies** - Thin layer on tokio-modbus
-4. **Industrial-grade** - Complete Modbus protocol support
+4. **Honest scope** - Reject what isn't modeled yet instead of mis-mapping it
 5. **Composable** - Works with existing tokio-modbus code
 
 ## Current Status
 
-**Implemented (Phase 1, 2, 5):**
-- ✅ Core traits (ToRegisters, FromRegisters, ModbusMetadata)
-- ✅ All primitive types (bool, u8-u64, i8-i64, f32, f64)
-- ✅ Bit packing (up to 16 bools per register)
-- ✅ Byte packing (2× u8/i8 per register)
-- ✅ Configurable endianness (per-field)
-- ✅ Complete FunctionCode enumeration (19 codes)
-- ✅ RegisterType with function code mappings
-- ✅ BitPosition and ByteOffset helper types
-- ✅ 35+ comprehensive tests
+**Implemented:**
+- ✅ Core traits (`ToRegisters`, `FromRegisters`, `ModbusMetadata`)
+- ✅ Primitive types (`bool`, `u8`–`u64`, `i8`–`i64`, `f32`, `f64`)
+- ✅ Bit packing (up to 16 bools per register) and byte packing (2× u8/i8 per register)
+- ✅ Per-field configurable endianness
+- ✅ Compile-time contiguous-layout validation
+- ✅ Async I/O: `ModbusRead` / `ModbusWrite` over `tokio-modbus` (`holding` / `input`)
+- ✅ `FunctionCode` enumeration (19 codes) and `RegisterType` helpers
+- ✅ Tested: serialization, packing, contiguity (compile-fail), and mock-device I/O
 
-**Planned:**
-- Tokio-modbus integration helpers (async read/write)
-- Advanced types (String, Option, enums, arrays)
-- Nested struct support
-- Server mode (field-level read/write control)
+**Not implemented yet:**
+- `String`, `Option<T>`, enums, arrays, tuples, nested structs
+- `coil` / `discrete` register types (bit-addressed wire format)
+- Server mode (field-level read/write control, change callbacks)
+
+See [TYPE_SPEC.md](TYPE_SPEC.md) for the full breakdown of what is and isn't supported.
 
 ## Performance
 
-**Zero overhead** - identical to hand-written code:
-
-```bash
-$ cargo build --release
-   Compiling modbus-mapper v0.1.0
-   # All code generated at compile time
-   # No runtime serialization framework
-   # No vtables, no dynamic dispatch
-   # Direct register access
-```
-
-Generated code compiles to optimal assembly with no indirection.
+Serialization is generated at compile time — no reflection, no runtime framework, no
+dynamic dispatch. The `to_registers`/`from_registers` code is equivalent to a
+hand-written conversion. The async I/O layer adds one `async-trait` box per call, which
+is negligible next to the network round-trip it wraps.
 
 ## Testing
 
@@ -401,6 +424,8 @@ cargo test --doc
 ```
 
 **Test coverage:**
-- 12 core tests (endianness, function codes, bit positions)
-- 16 packing tests (bit/byte packing, mixed, roundtrip)
+- 12 core unit tests (endianness, function codes, bit positions)
 - 7 primitive type tests (all types, metadata, errors)
+- 16 packing tests (bit/byte packing, mixed, roundtrip)
+- 5 client I/O tests (mock-device read/write, base-address placement, read-only guard)
+- 2 compile-fail tests (non-contiguous layout, unsupported `coil` type)

@@ -1,6 +1,6 @@
 //! Integration tests for ModbusMapper derive macro with primitive types.
 
-use modbus_mapper::{ModbusMapper, ToRegisters, FromRegisters, ModbusMetadata, RegisterType};
+use modbus_mapper::{FromRegisters, ModbusMapper, ModbusMetadata, RegisterType, ToRegisters};
 
 #[derive(ModbusMapper)]
 #[modbus(base_address = 0, register_type = "holding")]
@@ -153,8 +153,8 @@ fn test_all_primitive_types() {
         i32_field: -123456,
         u64_field: 0x0123456789ABCDEF,
         i64_field: -987654321,
-        f32_field: 3.14159,
-        f64_field: 2.718281828,
+        f32_field: 1234.5,
+        f64_field: 98765.4321,
         bool_field: true,
     };
 

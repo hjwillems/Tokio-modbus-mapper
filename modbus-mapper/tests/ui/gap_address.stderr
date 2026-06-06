@@ -1,0 +1,7 @@
+error: field(s) ["b"] declare address 10, but the contiguous layout expects address 1. Field addresses are offsets within the struct's register block and must be gap-free and start at 0 (packed fields share one address). Either renumber the addresses to be contiguous, or split the struct so each block maps a contiguous region of the device.
+ --> tests/ui/gap_address.rs:6:10
+  |
+6 | #[derive(ModbusMapper)]
+  |          ^^^^^^^^^^^^
+  |
+  = note: this error originates in the derive macro `ModbusMapper` (in Nightly builds, run with -Z macro-backtrace for more info)
